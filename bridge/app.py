@@ -115,9 +115,48 @@ async def setup_zeebe(bridge):
     return ZeebeAdapter(client), worker
 
 
-async def consume_alerts(bridge, consumer=None):
+class OffsetStore:
+    """Next offset to process per (topic, partition), persisted next to the case map.
+
+    Needed because a NEW Redpanda HTTP-proxy consumer instance starts at auto.offset.reset
+    (earliest) instead of the group's committed offset (observed 2026-11-23: committed 4, new
+    instance re-read 0-3). The group commit stays (rpk group describe shows lag), but this file
+    is what prevents re-processing alerts after a restart. Missing file = start at 0, which is
+    right for a fresh stack; to adopt an existing group, seed it: {"alerts|0": <committed offset>}."""
+
+    def __init__(self, path):
+        self.path = path
+        self.d = {}
+        if path and os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    self.d = {k: int(v) for k, v in json.load(fh).items()}
+            except (OSError, ValueError) as e:
+                log(f"offset file unreadable, starting from 0: {e}")
+
+    def next(self, topic, partition):
+        return self.d.get(f"{topic}|{partition}", 0)
+
+    def advance(self, topic, partition, offset):
+        k = f"{topic}|{partition}"
+        if offset + 1 <= self.d.get(k, 0):
+            return
+        self.d[k] = offset + 1
+        if self.path:
+            tmp = f"{self.path}.tmp"
+            try:
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump(self.d, fh)
+                os.replace(tmp, self.path)
+            except OSError as e:
+                log(f"cannot save offsets: {e}")
+
+
+async def consume_alerts(bridge, consumer=None, offsets=None):
     consumer = consumer or Consumer(PROXY, GROUP, [ALERTS_TOPIC])
-    log(f"consuming {ALERTS_TOPIC} as group {GROUP}")
+    offsets = offsets or OffsetStore(None)
+    log(f"consuming {ALERTS_TOPIC} as group {GROUP}; resume at "
+        f"{offsets.d or 'offset 0 (no offset file)'}")
     while True:
         try:
             recs = await asyncio.to_thread(consumer.poll, 1000)
@@ -126,12 +165,18 @@ async def consume_alerts(bridge, consumer=None):
             consumer.name = None
             await asyncio.sleep(5)
             continue
+        skipped = 0
         for r in recs:
-            v = r.get("value")
-            if not isinstance(v, dict) or v.get("type") == "heartbeat":
+            if r["offset"] < offsets.next(r["topic"], r["partition"]):
+                skipped += 1                       # already processed before a restart
                 continue
-            log(f"alert {v.get('type')} case_key={v.get('case_key')}")
-            await bridge.handle_alert(v)
+            v = r.get("value")
+            if isinstance(v, dict) and v.get("type") != "heartbeat":
+                log(f"alert {v.get('type')} case_key={v.get('case_key')} (offset {r['offset']})")
+                await bridge.handle_alert(v)
+            offsets.advance(r["topic"], r["partition"], r["offset"])
+        if skipped:
+            log(f"skipped {skipped} already-processed record(s)")
         if recs:
             try:
                 await asyncio.to_thread(consumer.commit, recs)
@@ -167,7 +212,8 @@ async def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
 
-    tasks = [consume_alerts(bridge, consumer)]
+    offsets = OffsetStore(os.path.join(os.path.dirname(state), "offsets.json") if state else None)
+    tasks = [consume_alerts(bridge, consumer, offsets)]
     if ZEEBE_ENABLED:
         zeebe, worker = await setup_zeebe(bridge)
         bridge.zeebe = zeebe
