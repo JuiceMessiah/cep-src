@@ -121,4 +121,73 @@ assert len(deletes) == 1 and "/consumers/cep-bridge/instances/bridge-" in delete
 assert "stopped: consumer instance closed" in out and "1 known cases" in out
 print("2. SIGTERM deletes the consumer instance: ok")
 srv.shutdown()
+
+
+# ---------- 4. restart does not re-process alerts (proxy that ignores committed offsets, like Redpanda) ----------
+import importlib.util                                                   # noqa: E402
+ALERTS = [{"alert_id": f"x{i}", "type": "SmokeTest", "case_key": f"c{i}", "event_time": i} for i in range(4)]
+
+
+class RP(BaseHTTPRequestHandler):
+    """Every new consumer instance starts at offset 0, commits are accepted and ignored."""
+    seen = {}
+
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, obj=None):
+        body = json.dumps(obj).encode() if obj is not None else b""
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        inst = self.path.split("/instances/")[1].split("/")[0]
+        if RP.seen.get(inst):
+            time.sleep(0.1)
+            return self._send(200, [])
+        RP.seen[inst] = True
+        return self._send(200, [{"topic": "alerts", "partition": 0, "offset": i, "key": a["case_key"], "value": a}
+                                for i, a in enumerate(ALERTS)])
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        return self._send(200 if self.path.endswith("/consumers/cep-bridge") else 204, {})
+
+    def do_DELETE(self):
+        self._send(204)
+
+
+srv2 = ThreadingHTTPServer(("127.0.0.1", 0), RP)
+threading.Thread(target=srv2.serve_forever, daemon=True).start()
+os.environ.update(PANDAPROXY_URL=f"http://127.0.0.1:{srv2.server_address[1]}", LOGGING_URL="")
+spec = importlib.util.spec_from_file_location("bridge_app", ROOT / "bridge" / "app.py")
+bapp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bapp)
+offs_file = str(Path(tempfile.mkdtemp()) / "offsets.json")
+
+
+def run_once():
+    handled = []
+
+    class B:
+        async def handle_alert(self, a):
+            handled.append(a["case_key"])
+
+    async def go():
+        t = asyncio.create_task(bapp.consume_alerts(B(), bapp.Consumer(bapp.PROXY, "cep-bridge", ["alerts"]),
+                                                    bapp.OffsetStore(offs_file)))
+        await asyncio.sleep(0.8)
+        t.cancel()
+    asyncio.run(go())
+    return handled
+
+
+first, second = run_once(), run_once()             # second = "bridge restarted", new proxy instance
+assert first == ["c0", "c1", "c2", "c3"], first
+assert second == [], second                         # before the fix: c0..c3 again
+assert json.loads(Path(offs_file).read_text()) == {"alerts|0": 4}
+srv2.shutdown()
+print("4. restart does not re-process alerts: ok")
 print("\nALL LIFECYCLE TESTS PASSED")
