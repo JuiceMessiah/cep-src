@@ -19,6 +19,7 @@ goes into `timestamp` (used for the XES log).
 No engine imports here: Zeebe and DCR clients are injected (testable offline).
 """
 import json
+import os
 import time
 from datetime import datetime, timezone
 
@@ -53,15 +54,40 @@ def envelope(event, case_key, case_id, engine, process, *, payload=None, error="
 
 
 class Bridge:
-    def __init__(self, mapping, *, zeebe=None, dcr=None, emit=None, log=None, printer=print):
+    def __init__(self, mapping, *, zeebe=None, dcr=None, emit=None, log=None, printer=print,
+                 state_file=None):
         self.mapping = mapping
         self.zeebe = zeebe          # async start_process(pid, vars) -> key ; async publish_message(name, key, vars)
         self.dcr = dcr              # sync create_case() -> id ; execute(case, event) -> enabled ; enabled_events(case)
         self.emit = emit or (lambda env: None)   # -> pais.events
         self.log = log or (lambda env: None)     # -> logging service
         self.print = printer
-        self.cases = {}             # (engine, process, case_key) -> engine case id
+        self.state_file = state_file
+        self.cases = _CaseMap(self._load_state(), self._save_state)   # (engine, process, case_key) -> case id
         self.dcr_process = f"dcr:{getattr(dcr, 'graph_id', 'graph')}"
+
+    # ---------------- persisted case map (survives bridge restarts) ----------------
+    def _load_state(self):
+        if not self.state_file or not os.path.exists(self.state_file):
+            return {}
+        try:
+            with open(self.state_file, encoding="utf-8") as fh:
+                raw = json.load(fh)
+            return {tuple(k.split("|", 2)): v for k, v in raw.items()}
+        except (OSError, ValueError) as e:
+            self.print(f"state file unreadable, starting empty: {e}")
+            return {}
+
+    def _save_state(self, data):
+        if not self.state_file:
+            return
+        tmp = f"{self.state_file}.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({"|".join(k): v for k, v in data.items()}, fh)
+            os.replace(tmp, self.state_file)          # atomic
+        except OSError as e:
+            self.print(f"cannot save state: {e}")
 
     # ---------------- helpers ----------------
     def engine_enabled(self, engine):
@@ -222,3 +248,15 @@ def load_mapping(path):
             if a.get("engine") == "zeebe" and a.get("action") == "publish_message" and not a.get("message"):
                 raise ValueError(f"on_alert.{t}: publish_message needs message")
     return m
+
+
+class _CaseMap(dict):
+    """dict that persists itself on every write."""
+
+    def __init__(self, initial, saver):
+        super().__init__(initial)
+        self._saver = saver
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, str(value))
+        self._saver(dict(self))
