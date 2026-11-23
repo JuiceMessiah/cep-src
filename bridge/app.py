@@ -160,6 +160,10 @@ async def main():
         tasks.append(worker.work())
     else:
         log("Zeebe disabled")
+    skipped = bridge.skipped_actions()
+    if skipped:
+        log("engine disabled, these mapping actions are SKIPPED: "
+            + ", ".join(f"{t}->{e}" for t, e in skipped))
     await asyncio.gather(*tasks)
 
 
