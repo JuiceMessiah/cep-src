@@ -2,7 +2,7 @@ FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb
 
 WORKDIR /app
 RUN pip install --no-cache-dir flask==3.0.3
-COPY app.py .
+COPY --chmod=0644 app.py .
 RUN mkdir -p /logs /XES
 
 USER 568:568
