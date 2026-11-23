@@ -23,6 +23,7 @@ import asyncio
 import glob
 import json
 import os
+import signal
 import sys
 import urllib.error
 import urllib.request
@@ -40,6 +41,7 @@ ZEEBE_ADDRESS = os.getenv("ZEEBE_ADDRESS", "zeebe:26500")
 BPMN_DIR = os.getenv("BPMN_DIR", "/bpmn")
 DCR_ENABLED = os.getenv("DCR_ENABLED", "false").lower() == "true"
 LOGGING_URL = os.getenv("LOGGING_URL", "http://logging-service:5010/log")
+STATE_FILE = os.getenv("STATE_FILE", "/state/cases.json")   # case_key -> instance ids; empty = in memory only
 
 BASE_VARS = ["caseKey", "alertType", "alertId", "severity", "cepEventTime"]
 
@@ -113,8 +115,8 @@ async def setup_zeebe(bridge):
     return ZeebeAdapter(client), worker
 
 
-async def consume_alerts(bridge):
-    consumer = Consumer(PROXY, GROUP, [ALERTS_TOPIC])
+async def consume_alerts(bridge, consumer=None):
+    consumer = consumer or Consumer(PROXY, GROUP, [ALERTS_TOPIC])
     log(f"consuming {ALERTS_TOPIC} as group {GROUP}")
     while True:
         try:
@@ -151,9 +153,21 @@ async def main():
         log(f"DCR enabled, graph {dcr.graph_id}")
 
     await asyncio.to_thread(wait_for_proxy, PROXY, 60, 2.0, log)
-    bridge = Bridge(mapping, dcr=dcr, emit=emit_pais, log=post_log, printer=log)
+    state = STATE_FILE if STATE_FILE and os.path.isdir(os.path.dirname(STATE_FILE)) else None
+    if STATE_FILE and not state:
+        log(f"state dir for {STATE_FILE} missing: case map kept in memory only")
+    bridge = Bridge(mapping, dcr=dcr, emit=emit_pais, log=post_log, printer=log, state_file=state)
+    log(f"case map: {len(bridge.cases)} known cases" + (f" from {state}" if state else ""))
 
-    tasks = [consume_alerts(bridge)]
+    # Clean shutdown on SIGTERM (docker stop): delete the proxy-side consumer instance, otherwise a
+    # zombie instance stays in the group and can swallow alerts until the proxy expires it.
+    consumer = Consumer(PROXY, GROUP, [ALERTS_TOPIC])
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+
+    tasks = [consume_alerts(bridge, consumer)]
     if ZEEBE_ENABLED:
         zeebe, worker = await setup_zeebe(bridge)
         bridge.zeebe = zeebe
@@ -164,7 +178,16 @@ async def main():
     if skipped:
         log("engine disabled, these mapping actions are SKIPPED: "
             + ", ".join(f"{t}->{e}" for t, e in skipped))
-    await asyncio.gather(*tasks)
+    running = [asyncio.ensure_future(t) for t in tasks]
+    stopper = asyncio.ensure_future(stop.wait())
+    done, _ = await asyncio.wait(running + [stopper], return_when=asyncio.FIRST_COMPLETED)
+    for t in running:
+        t.cancel()
+    await asyncio.to_thread(consumer.close)
+    log("stopped: consumer instance closed")
+    for t in done:
+        if t is not stopper and t.exception():
+            raise t.exception()
 
 
 if __name__ == "__main__":
