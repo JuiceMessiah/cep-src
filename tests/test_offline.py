@@ -261,7 +261,8 @@ def main():
     assert rf["event_time"] == T0 and set(rf["payload"]["enabledEvents"]) == {"Escalate", "CloseCase"}
     ack = [e for e in pais if e["event"] == "Acknowledge incident" and e["case_key"] == "c3_4"][0]
     assert ack["event_time"] == T0 and "alert" not in ack["payload"]       # time propagated, no blob
-    assert P.committed[("test-group", "alerts", 0)] == 6                    # all 6 records committed
+    commits = {k: v for k, v in P.committed.items() if k[0].startswith("test-group-") and k[1] == "alerts"}
+    assert list(commits.values()) == [6], P.committed                      # all 6 records committed (fresh group)
     assert all("s3cret-pass" not in json.dumps(e) for e in pais)
 
     # logging service + XES
