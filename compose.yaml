@@ -8,6 +8,7 @@
 #       .env           600 568:568   OWM_API_KEY, FIRMS_MAP_KEY
 #       bridge.env     600 568:568   DCR_ENABLED, DCR_GRAPH_ID, DCR_USERNAME, DCR_PASSWORD
 #       XES/, logs/    750 568:568   logging service output (on fast/apps -> snapshotted)
+#       bridge-state/  750 568:568   bridge case map (cases.json)
 #   /mnt/fast/scratch/redpanda                    dataset, recordsize=4K, 750 101:101 (Redpanda asserts on 128K)
 #
 # Local images, built on the NAS (Arcane never builds or pulls them, pull_policy: never):
@@ -158,7 +159,9 @@ services:
     restart: unless-stopped
 
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    # 8.16+ REQUIRED by Camunda 8.8 (the course example's 8.15.0 makes Operate crash with
+    # MissingRequiredPropertyException 'HealthResponse.unassignedPrimaryShards'). Stay on 8.x.
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.18.0
     container_name: cep-elasticsearch
     environment:
       discovery.type: single-node
@@ -214,9 +217,11 @@ services:
       LOGGING_URL: http://logging-service:5010/log
       MAPPING_FILE: /config/mapping.json
       BPMN_DIR: /bpmn
+      STATE_FILE: /state/cases.json      # case_key -> instance ids, survives bridge restarts
     volumes:
       - /mnt/fast/apps/cep-src/bridge/mapping.json:/config/mapping.json:ro
       - /mnt/fast/apps/cep-src/bpmn:/bpmn:ro
+      - ./bridge-state:/state            # 750 568:568, create before Up
     networks: [core, edge]
     user: "568:568"
     read_only: true
