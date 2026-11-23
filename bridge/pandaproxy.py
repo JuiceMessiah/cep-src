@@ -57,11 +57,19 @@ class Consumer:
     """One consumer instance in a consumer group. Recreated transparently if the
     proxy expired it (idle instances are removed server-side)."""
 
-    def __init__(self, proxy, group, topics, offset_reset="earliest"):
+    def __init__(self, proxy, group, topics, offset_reset="earliest", ephemeral_group=False):
+        """ephemeral_group=True: every (re)start joins a brand-new group "<group>-<random>".
+        Redpanda's HTTP proxy keeps old instances of a group alive server-side for minutes after a
+        restart; with one partition, the range balancer may hand that partition to such a zombie,
+        and alerts silently go nowhere (observed 2026-11-23). A fresh group has no other members.
+        Use it together with an own offset store, because a fresh group always starts at
+        offset_reset."""
         self.proxy = proxy.rstrip("/")
+        self.base_group = group
         self.group = group
         self.topics = list(topics)
         self.offset_reset = offset_reset
+        self.ephemeral_group = ephemeral_group
         self.name = None
 
     @property
@@ -69,6 +77,8 @@ class Consumer:
         return f"{self.proxy}/consumers/{urllib.parse.quote(self.group)}/instances/{self.name}"
 
     def start(self):
+        if self.ephemeral_group:
+            self.group = f"{self.base_group}-{uuid.uuid4().hex[:8]}"
         self.name = f"bridge-{uuid.uuid4().hex[:8]}"
         body = {"name": self.name, "format": "json", "auto.offset.reset": self.offset_reset,
                 "auto.commit.enable": "false"}      # we commit explicitly after processing
