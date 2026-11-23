@@ -1,0 +1,77 @@
+"""
+DCR Graphs REST client (repository.dcrgraphs.net), stdlib only.
+
+Same endpoints as the course example (POESS-example DCR/microservice/dcr_helper.py):
+  POST /graphs/{graph}/sims                      create a simulation (= case)
+  GET  /graphs/{graph}/sims?filter=all            list sims (to find the new id)
+  POST /graphs/{graph}/sims/{sim}/events/{event}  execute an event
+  GET  /graphs/{graph}/sims/{sim}/events          enabled/pending events
+
+Difference to the example: create_case() is serialised with a lock. The API
+doesn't return the new sim id, so the example takes the LAST id from the list;
+two alerts at the same moment would otherwise both get the same case.
+Credentials come from the environment and never appear in errors or logs.
+"""
+import base64
+import re
+import threading
+import urllib.error
+import urllib.request
+
+API = "https://repository.dcrgraphs.net/api"
+
+
+class DcrError(RuntimeError):
+    pass
+
+
+class DcrClient:
+    def __init__(self, graph_id, username, password, api=API, timeout=30):
+        if not (graph_id and username and password):
+            raise DcrError("DCR_GRAPH_ID, DCR_USERNAME and DCR_PASSWORD must be set")
+        self.graph_id = str(graph_id)
+        self.api = api.rstrip("/")
+        self.timeout = timeout
+        token = base64.b64encode(f"{username}:{password}".encode()).decode()
+        self._headers = {"Authorization": f"Basic {token}", "Accept": "application/xml",
+                         "Content-Type": "application/json"}
+        self._create_lock = threading.Lock()
+
+    def _call(self, method, path, body=b"{}"):
+        req = urllib.request.Request(f"{self.api}/graphs/{self.graph_id}{path}",
+                                     data=body if method == "POST" else None,
+                                     method=method, headers=self._headers)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                return r.status, r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()[:300].decode("utf-8", "replace")
+        except urllib.error.URLError as e:
+            raise DcrError(f"cannot reach DCR API: {e.reason}") from None
+
+    def create_case(self):
+        with self._create_lock:
+            status, text = self._call("POST", "/sims")
+            if status not in (200, 201):
+                raise DcrError(f"create sim: HTTP {status}")
+            status, xml = self._call("GET", "/sims?filter=all")
+            if status not in (200, 201):
+                raise DcrError(f"list sims: HTTP {status}")
+            ids = re.findall(r'<trace[^>]*id="(\d+)"', xml)
+            if not ids:
+                raise DcrError("create sim: no sim ids in response")
+            return ids[-1]
+
+    def enabled_events(self, case_id):
+        status, xml = self._call("GET", f"/sims/{case_id}/events")
+        if status not in (200, 201):
+            raise DcrError(f"enabled events: HTTP {status}")
+        xml = xml.replace('\\"', '"')
+        return re.findall(r'<event[^>]*id="([^"]+)"[^>]*enabled="true"[^>]*>', xml, flags=re.IGNORECASE)
+
+    def execute(self, case_id, event_id):
+        status, _ = self._call("POST", f"/sims/{case_id}/events/{event_id}")
+        if status not in (200, 201, 204):
+            # typical cause: event not enabled in the current marking (a DCR constraint said no)
+            raise DcrError(f"execute {event_id}: HTTP {status} (not enabled?)")
+        return self.enabled_events(case_id)

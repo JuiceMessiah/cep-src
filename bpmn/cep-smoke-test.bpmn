@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Smoke test for the CEP <-> Camunda integration. NOT one of the six project processes.
+  Lets the backend be tested end to end before the real models exist:
+    alert SmokeTest        -> bridge starts this process (caseKey = alert.case_key)
+    task "notify-cep"      -> bridge emits "Acknowledge incident" on pais.events
+    alert SmokeTestUpdate  -> bridge publishes message FireUpdate (correlation key = caseKey)
+    task "close-incident"  -> bridge emits "Close incident" on pais.events
+  The real models follow the same pattern: see CONTRACT.md.
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+                  id="Definitions_cep_smoke_test"
+                  targetNamespace="http://bpmn.io/schema/bpmn"
+                  exporter="hand-written" exporterVersion="1.0"
+                  modeler:executionPlatform="Camunda Cloud"
+                  modeler:executionPlatformVersion="8.8.0">
+  <bpmn:message id="Message_FireUpdate" name="FireUpdate">
+    <bpmn:extensionElements>
+      <zeebe:subscription correlationKey="=caseKey" />
+    </bpmn:extensionElements>
+  </bpmn:message>
+
+  <bpmn:process id="cep_smoke_test" name="CEP smoke test" isExecutable="true">
+    <bpmn:startEvent id="StartEvent_1" name="Fire risk detected">
+      <bpmn:outgoing>Flow_1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="Task_Acknowledge" name="Acknowledge incident">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="notify-cep" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_2</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:intermediateCatchEvent id="Catch_FireUpdate" name="Fire update received">
+      <bpmn:incoming>Flow_2</bpmn:incoming>
+      <bpmn:outgoing>Flow_3</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MED_FireUpdate" messageRef="Message_FireUpdate" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:serviceTask id="Task_Close" name="Close incident">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="close-incident" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_3</bpmn:incoming>
+      <bpmn:outgoing>Flow_4</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="End_1" name="Incident closed">
+      <bpmn:incoming>Flow_4</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="StartEvent_1" targetRef="Task_Acknowledge" />
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_Acknowledge" targetRef="Catch_FireUpdate" />
+    <bpmn:sequenceFlow id="Flow_3" sourceRef="Catch_FireUpdate" targetRef="Task_Close" />
+    <bpmn:sequenceFlow id="Flow_4" sourceRef="Task_Close" targetRef="End_1" />
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="Diagram_1">
+    <bpmndi:BPMNPlane id="Plane_1" bpmnElement="cep_smoke_test">
+      <bpmndi:BPMNShape id="Shape_Start" bpmnElement="StartEvent_1">
+        <dc:Bounds x="152" y="102" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="126" y="145" width="88" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Ack" bpmnElement="Task_Acknowledge">
+        <dc:Bounds x="240" y="80" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Catch" bpmnElement="Catch_FireUpdate">
+        <dc:Bounds x="392" y="102" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="366" y="145" width="88" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Close" bpmnElement="Task_Close">
+        <dc:Bounds x="480" y="80" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_End" bpmnElement="End_1">
+        <dc:Bounds x="632" y="102" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="612" y="145" width="76" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Edge_1" bpmnElement="Flow_1">
+        <di:waypoint x="188" y="120" /><di:waypoint x="240" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_2" bpmnElement="Flow_2">
+        <di:waypoint x="340" y="120" /><di:waypoint x="392" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_3" bpmnElement="Flow_3">
+        <di:waypoint x="428" y="120" /><di:waypoint x="480" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_4" bpmnElement="Flow_4">
+        <di:waypoint x="580" y="120" /><di:waypoint x="632" y="120" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

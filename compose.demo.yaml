@@ -1,0 +1,201 @@
+# compose.demo.yaml: the WHOLE system on one laptop (development + the screencast).
+# Not for the server (that's compose.yaml). Everything binds to 127.0.0.1.
+#
+#   cp bridge/.env.template bridge/.env              # only needed for DCR
+#   docker compose -f compose.demo.yaml up -d --build
+#   python3 tools/send_alert.py SmokeTest c3_4       # CEP -> Camunda without a Flink job
+#   docker compose -f compose.demo.yaml run --rm replayer /scenarios/<name>.jsonl --duration 90
+#   docker compose -f compose.demo.yaml down -v      # clean slate before a take
+#
+# UIs:   Flink http://localhost:8081   Operate http://localhost:8088 (demo/demo)
+#        logging service http://localhost:5010/events   XES files in ./XES
+# Host:  Kafka localhost:19092   Redpanda HTTP proxy http://localhost:18082   Zeebe gRPC localhost:26500
+#
+# Camunda part copied from the course example (POESS-example/BPMN): Zeebe 8.8.0 +
+# Elasticsearch + Operate. Operate moved from 8081 to 8088 (8081 = Flink UI).
+# Its security is OFF (unprotected API, ES without auth): fine on 127.0.0.1, never on a LAN.
+# RAM: roughly 7-8 GB for everything. 16 GB laptop recommended for the demo.
+
+name: cep-demo
+
+x-flink: &flink
+  image: flink:2.2.1-java17@sha256:55ccb2ad4b98362c3f3503c5a6d7cd00b92eb25e38815ddaf0be5903ade54ffe
+  security_opt: ["no-new-privileges:true"]
+
+x-redpanda-image: &redpanda-image
+  image: docker.redpanda.com/redpandadata/redpanda:v26.2.6@sha256:8b1076e0d61bfceb66594dc01536427ce0b529f8ead35fdab9763ab6085891ce
+
+services:
+  # ---------------- event backbone + CEP ----------------
+  redpanda:
+    <<: *redpanda-image
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr=internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr=internal://redpanda:8082,external://localhost:18082
+    ports:
+      - "127.0.0.1:19092:19092"
+      - "127.0.0.1:18082:18082"
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data     # laptops aren't ZFS, a named volume is fine here
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    mem_limit: 1536m
+
+  topics:   # one-shot: creates topics, exits. "already exists" errors are fine.
+    <<: *redpanda-image
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        for t in weather.raw firms.raw weather.replay firms.replay alerts pais.events; do
+          rpk topic create "$$t" -p 1 -X brokers=redpanda:9092 || true
+        done
+    restart: "no"
+
+  jobmanager:
+    <<: *flink
+    command: jobmanager
+    ports:
+      - "127.0.0.1:8081:8081"
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        jobmanager.memory.process.size: 1600m
+        web.submit.enable: true
+        web.cancel.enable: true
+
+  taskmanager:
+    <<: *flink
+    command: taskmanager
+    depends_on: [jobmanager]
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 2
+        taskmanager.memory.process.size: 1728m
+
+  # ---------------- PAIS: Camunda 8 (from the course example) ----------------
+  zeebe:
+    image: camunda/zeebe:8.8.0
+    ports:
+      - "127.0.0.1:26500:26500"
+      - "127.0.0.1:9600:9600"
+    environment:
+      CAMUNDA_SECURITY_AUTHENTICATION_UNPROTECTEDAPI: "true"
+      CAMUNDA_SECURITY_AUTHORIZATIONS_ENABLED: "false"
+      ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_CLASSNAME: io.camunda.zeebe.exporter.ElasticsearchExporter
+      ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_URL: http://elasticsearch:9200
+    depends_on:
+      - elasticsearch
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ports:
+      - "127.0.0.1:9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  operate:
+    image: camunda/operate:8.8.0
+    ports:
+      - "127.0.0.1:8088:8080"
+    depends_on:
+      zeebe:
+        condition: service_started
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      CAMUNDA_OPERATE_ZEEBE_GATEWAYADDRESS: zeebe:26500
+      CAMUNDA_OPERATE_ELASTICSEARCH_URL: http://elasticsearch:9200
+      CAMUNDA_DATA_SECONDARY_STORAGE_ELASTICSEARCH_URL: http://elasticsearch:9200
+
+  # ---------------- integration ----------------
+  bridge:
+    build: ./bridge
+    depends_on:
+      topics:
+        condition: service_completed_successfully
+      zeebe:
+        condition: service_started
+    env_file:
+      - path: ./bridge/.env          # DCR credentials; optional
+        required: false
+    environment:
+      PANDAPROXY_URL: http://redpanda:8082
+      ZEEBE_ADDRESS: zeebe:26500
+      LOGGING_URL: http://logging-service:5010/log
+      MAPPING_FILE: /config/mapping.json
+      BPMN_DIR: /bpmn
+    volumes:
+      - ./bridge/mapping.json:/config/mapping.json:ro
+      - ./bpmn:/bpmn:ro
+    restart: unless-stopped
+
+  logging-service:
+    build: ./logging_service
+    ports:
+      - "127.0.0.1:5010:5010"
+    volumes:
+      - ./logs:/logs
+      - ./XES:/XES
+    restart: unless-stopped
+
+  # ---------------- event sources (on demand) ----------------
+  replayer:
+    image: python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+    profiles: ["tools"]
+    entrypoint: ["python", "-u", "/app/replay.py", "--proxy", "http://redpanda:8082"]
+    volumes:
+      - ./replay.py:/app/replay.py:ro
+      - ./scenarios:/scenarios:ro
+    depends_on: [redpanda]
+
+  poller:
+    image: python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+    profiles: ["live"]
+    command: ["python", "-u", "/app/poller.py"]
+    env_file: ./.env          # OWM_API_KEY=..., FIRMS_MAP_KEY=...  (the laptop owner's keys; gitignored)
+    environment:
+      PANDAPROXY_URL: http://redpanda:8082
+      BBOX: "-10,35,30,45"
+      GRID_STEP_DEG: "5"
+    volumes:
+      - ./poller.py:/app/poller.py:ro
+    read_only: true
+    cap_drop: [ALL]
+    depends_on: [redpanda]
+
+  sql-client:
+    <<: *flink
+    command: bin/sql-client.sh
+    profiles: ["tools"]
+    depends_on: [jobmanager]
+    stdin_open: true
+    tty: true
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        rest.address: jobmanager
+
+volumes:
+  redpanda-data: {}

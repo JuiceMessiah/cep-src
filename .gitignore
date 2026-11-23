@@ -1,0 +1,19 @@
+# secrets
+.env
+*.env
+!*.env.template
+
+# runtime output
+logs/
+XES/
+*.tmp
+
+# python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# build output (Flink job)
+target/
+*.jar
