@@ -19,7 +19,7 @@ Backend for the 02268 group project: external event sources (NASA FIRMS, OpenWea
 | `tools/send_alert.py` | send one alert by hand: test the process side without a Flink job | laptop |
 | `tests/test_offline.py` | end-to-end test with fake Redpanda/DCR/Zeebe | anywhere with Python + Flask |
 | `compose.demo.yaml` | **everything on one laptop** (dev + screencast) | laptop |
-| `compose.yaml` | server stack (Flink + Redpanda + poller) | NAS (Arcane) |
+| `compose.yaml` | **server** stack: everything in `compose.demo.yaml` plus the live poller, hardened (internal network, digests, 568) | NAS (Arcane), see `runbook-cep-lab.md` |
 
 ## Laptop quickstart
 
@@ -65,6 +65,7 @@ python3 tests/test_offline.py      # needs Python 3.10+ and Flask
 | Part | State |
 |---|---|
 | Server: Flink 2.2.1, Redpanda, poller | running on the NAS |
+| Server: Camunda 8.8, bridge, logging | compose ready (`compose.yaml`), not yet deployed |
 | `backfill.py`, `replay.py` | tested offline (fake APIs); real API endpoints not yet run |
 | Bridge, logging service | tested offline end to end; **not yet run against real Zeebe 8.8 / dcrgraphs.net** |
 | Flink CEP job(s) | not started: patterns depend on what the processes need |
