@@ -9,6 +9,7 @@ Lifecycle tests for the bridge (offline):
 import asyncio
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -117,7 +118,9 @@ out, _ = p.communicate(timeout=10)
 print("   bridge output:", " | ".join(out.strip().splitlines()[-3:]))
 deletes = [x for x in calls if x[0] == "DELETE"]
 assert p.returncode == 0, (p.returncode, out)
-assert len(deletes) == 1 and "/consumers/cep-bridge/instances/bridge-" in deletes[0][1], calls
+assert len(deletes) == 1 and re.search(r"/consumers/cep-bridge-[0-9a-f]{8}/instances/bridge-", deletes[0][1]), calls
+groups = {x[1] for x in calls if x[0] == "POST" and re.fullmatch(r"/consumers/cep-bridge-[0-9a-f]{8}", x[1])}
+assert len(groups) == 1, groups             # fresh group per start
 assert "stopped: consumer instance closed" in out and "1 known cases" in out
 print("2. SIGTERM deletes the consumer instance: ok")
 srv.shutdown()
@@ -153,7 +156,7 @@ class RP(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.rfile.read(int(self.headers.get("Content-Length") or 0))
-        return self._send(200 if self.path.endswith("/consumers/cep-bridge") else 204, {})
+        return self._send(200 if "/instances/" not in self.path else 204, {})
 
     def do_DELETE(self):
         self._send(204)
@@ -176,8 +179,9 @@ def run_once():
             handled.append(a["case_key"])
 
     async def go():
-        t = asyncio.create_task(bapp.consume_alerts(B(), bapp.Consumer(bapp.PROXY, "cep-bridge", ["alerts"]),
-                                                    bapp.OffsetStore(offs_file)))
+        t = asyncio.create_task(bapp.consume_alerts(
+            B(), bapp.Consumer(bapp.PROXY, "cep-bridge", ["alerts"], ephemeral_group=True),
+            bapp.OffsetStore(offs_file)))
         await asyncio.sleep(0.8)
         t.cancel()
     asyncio.run(go())
