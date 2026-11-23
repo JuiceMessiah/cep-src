@@ -101,7 +101,9 @@ services:
       - elasticsearch
 
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    # 8.16+ REQUIRED by Camunda 8.8 (the course example's 8.15.0 makes Operate crash with
+    # MissingRequiredPropertyException 'HealthResponse.unassignedPrimaryShards'). Stay on 8.x.
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.18.0
     environment:
       discovery.type: single-node
       xpack.security.enabled: "false"
