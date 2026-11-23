@@ -4,7 +4,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY pandaproxy.py dcr.py core.py app.py ./
+COPY --chmod=0644 pandaproxy.py dcr.py core.py app.py ./
 
 USER 568:568
 CMD ["python", "-u", "app.py"]
