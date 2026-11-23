@@ -70,8 +70,15 @@ class Consumer:
 
     def start(self):
         self.name = f"bridge-{uuid.uuid4().hex[:8]}"
-        _request("POST", f"{self.proxy}/consumers/{urllib.parse.quote(self.group)}",
-                 {"name": self.name, "format": "json", "auto.offset.reset": self.offset_reset})
+        body = {"name": self.name, "format": "json", "auto.offset.reset": self.offset_reset,
+                "auto.commit.enable": "false"}      # we commit explicitly after processing
+        try:
+            _request("POST", f"{self.proxy}/consumers/{urllib.parse.quote(self.group)}", body)
+        except ProxyError as e:
+            if e.status not in (400, 422):
+                raise
+            body.pop("auto.commit.enable")           # proxy doesn't know the field: create without it
+            _request("POST", f"{self.proxy}/consumers/{urllib.parse.quote(self.group)}", body)
         _request("POST", f"{self._base}/subscription", {"topics": self.topics})
 
     def poll(self, timeout_ms=1000, max_bytes=1_000_000):
