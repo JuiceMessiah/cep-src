@@ -13,7 +13,8 @@ is configured in mapping.json, not in code. Modellers fill that file in.
 Environment (see .env.template):
   PANDAPROXY_URL   http://redpanda:8082
   ALERTS_TOPIC     alerts            PAIS_TOPIC   pais.events
-  CONSUMER_GROUP   cep-bridge        MAPPING_FILE /config/mapping.json
+  CONSUMER_GROUP   cep-bridge        (prefix: each start uses a fresh group cep-bridge-<random>)
+  MAPPING_FILE     /config/mapping.json
   ZEEBE_ENABLED    true              ZEEBE_ADDRESS zeebe:26500
   BPMN_DIR         /bpmn             (every *.bpmn there is deployed at start)
   DCR_ENABLED      false             DCR_GRAPH_ID / DCR_USERNAME / DCR_PASSWORD
@@ -153,9 +154,11 @@ class OffsetStore:
 
 
 async def consume_alerts(bridge, consumer=None, offsets=None):
-    consumer = consumer or Consumer(PROXY, GROUP, [ALERTS_TOPIC])
+    consumer = consumer or Consumer(PROXY, GROUP, [ALERTS_TOPIC], ephemeral_group=True)
     offsets = offsets or OffsetStore(None)
-    log(f"consuming {ALERTS_TOPIC} as group {GROUP}; resume at "
+    if consumer.name is None:
+        await asyncio.to_thread(consumer.start)
+    log(f"consuming {ALERTS_TOPIC} as group {consumer.group}; resume at "
         f"{offsets.d or 'offset 0 (no offset file)'}")
     while True:
         try:
@@ -206,7 +209,7 @@ async def main():
 
     # Clean shutdown on SIGTERM (docker stop): delete the proxy-side consumer instance, otherwise a
     # zombie instance stays in the group and can swallow alerts until the proxy expires it.
-    consumer = Consumer(PROXY, GROUP, [ALERTS_TOPIC])
+    consumer = Consumer(PROXY, GROUP, [ALERTS_TOPIC], ephemeral_group=True)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
