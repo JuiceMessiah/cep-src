@@ -9,17 +9,18 @@ Backend for the 02268 group project: external event sources (NASA FIRMS, OpenWea
 
 | Path | What | Runs on |
 |---|---|---|
-| `poller.py` | live OpenWeather + FIRMS → `weather.raw` / `firms.raw` | server, laptop (`--profile live`) |
-| `backfill.py` | builds a scenario file from a **real past fire** (FIRMS + historical weather) | laptop with internet + own API keys |
+| `poller.py` | live OpenWeather + FIRMS → `weather.raw` / `firms.raw`, daily FWI → `fwi.raw` | server, laptop (`--profile live`) |
+| `fwi.py` | Canadian Fire Weather Index (Van Wagner & Pickett 1985), used by poller and backfill | |
+| `backfill.py` | builds a scenario file from a **real past fire** (FIRMS + historical weather + FWI) | laptop with internet + own API keys |
 | `replay.py` | replays a scenario into `*.replay` topics, time-compressed, original event times | server, laptop |
 | `bridge/` | alerts → Zeebe/DCR; Zeebe jobs + DCR results → `pais.events`; everything → logging | laptop (next to Camunda) |
 | `bridge/mapping.json` | **which alert does what in which model**: filled in by the modelling team | |
 | `logging_service/` | XES log per process (based on the course example) | laptop |
 | `bpmn/` | BPMN files; every `*.bpmn` here is deployed by the bridge at start | |
 | `tools/send_alert.py` | send one alert by hand: test the process side without a Flink job | laptop |
-| `tests/test_offline.py` | end-to-end test with fake Redpanda/DCR/Zeebe | anywhere with Python + Flask |
+| `tests/` | `test_offline.py` (end-to-end, fake Redpanda/DCR/Zeebe), `test_lifecycle.py`, `test_fwi.py` | anywhere with Python + Flask |
 | `compose.demo.yaml` | **everything on one laptop** (dev + screencast) | laptop |
-| `compose.yaml` | server stack (Flink + Redpanda + poller) | NAS (Arcane) |
+| `compose.yaml` | **server** stack: everything in `compose.demo.yaml` plus the live poller, hardened (internal network, digests, 568) | NAS (Arcane), see `runbook-cep-lab.md` |
 
 ## Laptop quickstart
 
@@ -52,12 +53,14 @@ Replay a recorded fire into the CEP:
 docker compose -f compose.demo.yaml run --rm replayer /scenarios/<name>.jsonl --duration 90
 ```
 
-UIs: Flink http://localhost:8081 · Operate http://localhost:8088 · logging http://localhost:5010/events. Everything binds to `127.0.0.1`.
+UIs: Flink http://localhost:8081 · Operate http://localhost:8088/operate · Tasklist http://localhost:8088/tasklist (demo/demo) · logging http://localhost:5010/events. Everything binds to `127.0.0.1`.
 
 ## Tests
 
 ```bash
 python3 tests/test_offline.py      # needs Python 3.10+ and Flask
+python3 tests/test_lifecycle.py
+python3 tests/test_fwi.py          # stdlib only
 ```
 
 ## Status (2026-11-23)
@@ -65,6 +68,7 @@ python3 tests/test_offline.py      # needs Python 3.10+ and Flask
 | Part | State |
 |---|---|
 | Server: Flink 2.2.1, Redpanda, poller | running on the NAS |
+| Server: Camunda 8.8, bridge, logging | compose ready (`compose.yaml`), not yet deployed |
 | `backfill.py`, `replay.py` | tested offline (fake APIs); real API endpoints not yet run |
 | Bridge, logging service | tested offline end to end; **not yet run against real Zeebe 8.8 / dcrgraphs.net** |
 | Flink CEP job(s) | not started: patterns depend on what the processes need |

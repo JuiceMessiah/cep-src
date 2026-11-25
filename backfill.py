@@ -4,6 +4,7 @@ backfill.py: build a replayable scenario from REAL historical data.
 
   NASA FIRMS detections (area API with a date)
 + hourly weather for every grid cell that had a detection (+ optional neighbours)
++ daily Fire Weather Index for the same cells (fwi.py, spun up from Open-Meteo history)
 -> scenarios/<name>.jsonl, sorted by event_time.
 
 Event schema is identical to poller.py (plus "replay": true and "provider"),
@@ -16,7 +17,7 @@ Examples (fish-safe; note --bbox=... with '=' because it starts with '-'):
 
   env FIRMS_MAP_KEY=... python3 backfill.py --check
   env FIRMS_MAP_KEY=... python3 backfill.py --name iberia-aug --bbox=-9.5,37,-6,40 \
-      --start 2026-08-10 --days 3 --grid 0.5 --sources VIIRS_NOAA20_SP,VIIRS_SNPP_SP
+      --start 2026-08-10 --days 3 --sources VIIRS_NOAA20_SP,VIIRS_SNPP_SP
 
 Weather providers (--weather):
   openmeteo  free, no key. Archive (reanalysis) API: the most recent days lag behind;
@@ -25,9 +26,12 @@ Weather providers (--weather):
              subscription (card on file; 1,000 free calls/day). One call per cell per hour,
              so it refuses to run above --owm-budget.
 
-GRID: cell ids are computed exactly like poller.py (origin = bbox west/south, size = --grid).
-Within one scenario both streams use the same grid, which is all the CEP join needs.
-Live poller cells and scenario cells are NOT comparable unless bbox and grid match.
+GRID: global, origin 90S/180W, size --grid (default 0.25), exactly like poller.py.
+Live and scenario cell ids are comparable as long as the grid size matches.
+
+FWI: for each weather cell, hourly Open-Meteo archive data from --fwi-spinup-days before
+--start is run through fwi.Tracker; one fwi event per day (at local noon) inside the
+scenario window goes into the file (stream "fwi" -> topic fwi.replay).
 """
 import argparse
 import csv
@@ -41,6 +45,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+
+import fwi  # fwi.py next to this file
 
 UA = {"User-Agent": "cep-lab-backfill/1.0 (university project)"}
 FIRMS = "https://firms.modaps.eosdis.nasa.gov"
@@ -71,31 +77,21 @@ def http_get(url, retries=3):
 
 
 class Grid:
-    """Same cell math as poller.py: c{row}_{col}, origin at bbox west/south."""
+    """Same cell math as poller.cell_id: global grid, c{row}_{col}, origin 90S/180W."""
 
-    def __init__(self, bbox, step):
-        self.W, self.S, self.E, self.N = bbox
+    def __init__(self, step):
         self.step = step
 
     def cell(self, lat, lon):
-        i = math.floor((lon - self.W) / self.step)
-        j = math.floor((lat - self.S) / self.step)
-        return f"c{j}_{i}"
+        return f"c{math.floor((lat + 90) / self.step)}_{math.floor((lon + 180) / self.step)}"
 
     def center(self, cell):
         j, i = (int(x) for x in cell[1:].split("_"))
-        return round(self.S + (j + 0.5) * self.step, 4), round(self.W + (i + 0.5) * self.step, 4)
+        return round(-90 + (j + 0.5) * self.step, 4), round(-180 + (i + 0.5) * self.step, 4)
 
     def neighbours(self, cell, radius):
         j, i = (int(x) for x in cell[1:].split("_"))
-        rows = math.ceil((self.N - self.S) / self.step)
-        cols = math.ceil((self.E - self.W) / self.step)
-        out = set()
-        for dj in range(-radius, radius + 1):
-            for di in range(-radius, radius + 1):
-                if 0 <= j + dj < rows and 0 <= i + di < cols:
-                    out.add(f"c{j + dj}_{i + di}")
-        return out
+        return {f"c{j + dj}_{i + di}" for dj in range(-radius, radius + 1) for di in range(-radius, radius + 1)}
 
 
 def _num(v):
@@ -206,6 +202,43 @@ def weather_openmeteo(cells, grid, t_from, t_to):
     return events
 
 
+def fwi_openmeteo(cells, grid, t_from, t_to, spinup_days):
+    """Daily FWI events (noon LST) inside [t_from, t_to) for each cell, spun up from history."""
+    events, skipped = [], 0
+    h_from = t_from - timedelta(days=spinup_days + 1)
+    for cell in sorted(cells):
+        lat, lon = grid.center(cell)
+        try:
+            tr = fwi.Tracker(cell, lat, lon)
+        except ValueError as e:
+            log(f"fwi: {e}")
+            skipped += 1
+            continue
+        q = urllib.parse.urlencode({
+            "latitude": lat, "longitude": lon,
+            "start_date": h_from.strftime("%Y-%m-%d"), "end_date": t_to.strftime("%Y-%m-%d"),
+            "hourly": "temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation",
+            "wind_speed_unit": "kmh", "timezone": "GMT", "timeformat": "unixtime",
+        })
+        h = json.loads(http_get(f"https://archive-api.open-meteo.com/v1/archive?{q}")).get("hourly", {})
+        rows = [(t, h["temperature_2m"][i], h["relative_humidity_2m"][i], h["wind_speed_10m"][i],
+                 h["precipitation"][i] or 0.0) for i, t in enumerate(h.get("time", []))]
+        results = tr.seed(rows)
+        prior = [r for r in results if r["noon_t"] < t_from.timestamp()]
+        before = len(prior)
+        if prior:  # the value in force when the scenario starts, stamped at the start
+            ev = fwi.event(cell, lat, lon, prior[-1], "computed", spinup_days=before - 1, replay=True)
+            ev["event_time"], ev["carried_over"] = int(t_from.timestamp() * 1000), True
+            events.append(ev)
+        for r in results:
+            if t_from.timestamp() <= r["noon_t"] < t_to.timestamp():
+                events.append(fwi.event(cell, lat, lon, r, "computed", spinup_days=before, replay=True))
+        time.sleep(0.5)
+    if skipped:
+        log(f"fwi: {skipped} cell(s) skipped (latitude)")
+    return events
+
+
 def weather_owm(cells, grid, t_from, t_to, key, budget):
     hours = int((t_to - t_from).total_seconds() // 3600)
     calls = len(cells) * hours
@@ -242,7 +275,7 @@ def main():
     ap.add_argument("--bbox", help="west,south,east,north (use --bbox=-9.5,37,-6,40)")
     ap.add_argument("--start", help="first day, YYYY-MM-DD (UTC)")
     ap.add_argument("--days", type=int, default=2)
-    ap.add_argument("--grid", type=float, default=0.5, help="cell size in degrees (default 0.5)")
+    ap.add_argument("--grid", type=float, default=0.25, help="cell size in degrees (default 0.25)")
     ap.add_argument("--sources", default="VIIRS_NOAA20_NRT,VIIRS_SNPP_NRT",
                     help="FIRMS sources; _NRT for recent dates, _SP for older (see --check)")
     ap.add_argument("--neighbours", type=int, default=1,
@@ -251,6 +284,8 @@ def main():
                     help="weather starts this many hours before --start (default 12)")
     ap.add_argument("--weather", choices=["openmeteo", "owm", "none"], default="openmeteo")
     ap.add_argument("--owm-budget", type=int, default=900)
+    ap.add_argument("--fwi-spinup-days", type=int, default=30,
+                    help="days of history before --start used to spin up FWI codes (0 = no FWI)")
     ap.add_argument("--out-dir", default="scenarios")
     a = ap.parse_args()
 
@@ -266,7 +301,7 @@ def main():
     bbox = [float(x) for x in a.bbox.split(",")]
     if len(bbox) != 4 or bbox[0] >= bbox[2] or bbox[1] >= bbox[3]:
         sys.exit("--bbox must be west,south,east,north")
-    grid = Grid(bbox, a.grid)
+    grid = Grid(a.grid)
     start = datetime.strptime(a.start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     end = start + timedelta(days=a.days)
     sources = [s.strip() for s in a.sources.split(",") if s.strip()]
@@ -291,14 +326,21 @@ def main():
     else:
         weather = []
 
+    fwis = fwi_openmeteo(cells, grid, w_from, end, a.fwi_spinup_days) if a.fwi_spinup_days > 0 else []
+    if fwis:
+        cls = [e["danger_class"] for e in fwis]
+        log(f"fwi: {len(fwis)} daily values, danger class {min(cls)}..{max(cls)}")
+
     records = [{"stream": "firms", "key": f["cell"], "value": f} for f in fires]
     records += [{"stream": "weather", "key": w["cell"], "value": w} for w in weather]
+    records += [{"stream": "fwi", "key": e["cell"], "value": e} for e in fwis]
     records.sort(key=lambda r: (r["value"]["event_time"], r["stream"]))
 
     meta = {
         "name": a.name, "bbox": bbox, "grid_deg": a.grid, "start": a.start, "days": a.days,
         "sources": sources, "weather_provider": a.weather, "neighbours": a.neighbours,
         "lead_hours": a.lead_hours, "fires": len(fires), "weather": len(weather),
+        "fwi": len(fwis), "fwi_spinup_days": a.fwi_spinup_days,
         "first_event": records[0]["value"]["event_time"], "last_event": records[-1]["value"]["event_time"],
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
@@ -309,7 +351,7 @@ def main():
         for r in records:
             fh.write(json.dumps(r, separators=(",", ":")) + "\n")
     span_h = (meta["last_event"] - meta["first_event"]) / 3_600_000
-    log(f"wrote {path}: {len(fires)} fire + {len(weather)} weather events over {span_h:.1f} h")
+    log(f"wrote {path}: {len(fires)} fire + {len(weather)} weather + {len(fwis)} fwi events over {span_h:.1f} h")
 
 
 if __name__ == "__main__":

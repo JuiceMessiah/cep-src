@@ -1,37 +1,55 @@
-# apache-flink: Flink CEP uni project (Flink + Redpanda + API poller). Arcane project.
-# Location: /mnt/fast/apps/stacks/apache-flink-cep/compose.yaml   (640 568:568)
-# Compose project = "apache-flink-cep":
-#   networks apache-flink-cep_core / apache-flink-cep_edge; broker data on /mnt/fast/scratch/redpanda
-# Arcane mounts /mnt/fast/apps/stacks at the IDENTICAL path, so ./.env and
-# ./poller.py resolve to the right host paths.
+# apache-flink-cep: SERVER stack on the NAS (Arcane project). Laptop/demo: compose.demo.yaml.
 #
-# Images are pinned by digest (runbook-cep-lab.md Phase 2).
+# Layout on the NAS:
+#   /mnt/fast/apps/cep-src/                       git checkout of the group repo (code, bpmn/, mapping.json)
+#                                                 OUTSIDE stacks/, so Arcane doesn't show the repo's compose files as projects
+#   /mnt/fast/apps/stacks/apache-flink-cep/       Arcane project: this compose.yaml + secrets + outputs
+#       compose.yaml   640 568:568   (copy of the repo's compose.yaml)
+#       .env           600 568:568   OWM_API_KEY, FIRMS_MAP_KEY
+#       bridge.env     600 568:568   DCR_ENABLED, DCR_GRAPH_ID, DCR_USERNAME, DCR_PASSWORD
+#       camunda.env    600 568:568   Camunda web login (initial admin user), see camunda.env.template
+#       XES/, logs/    750 568:568   logging service output (on fast/apps -> snapshotted)
+#       bridge-state/  750 568:568   bridge case map (cases.json)
+#   /mnt/fast/scratch/redpanda                    dataset, recordsize=4K, 750 101:101 (Redpanda asserts on 128K)
 #
-# Flink version is pinned to 2.2.x ON PURPOSE: flink:latest is 2.3.0, and there is
-# no Kafka connector for 2.3 yet (flink-connector-kafka 5.0.0 supports 2.1.x/2.2.x;
-# Maven artifact 5.0.0-2.2). Don't bump Flink until a connector for the new
-# version exists, and bump the connector in the job's pom at the same time.
-#
-# Files in this directory:
-#   compose.yaml   640 568:568  (git)
-#   poller.py      640 568:568  (git)
-#   replay.py      640 568:568  (git)
-#   scenarios/     750 568:568  (git: *.jsonl from backfill.py, files 640)
-#   .env           600 568:568  (NOT in git: OWM_API_KEY=..., FIRMS_MAP_KEY=...; edit it in Arcane's
-#                                .env editor, then check the mode: chmod 600 .env)
-# backfill.py is in the repo too but runs on a laptop (needs internet + keys), not here.
+# Local images, built on the NAS (Arcane never builds or pulls them, pull_policy: never):
+#   docker build -t cep-bridge:local  /mnt/fast/apps/cep-src/bridge
+#   docker build -t cep-logging:local /mnt/fast/apps/cep-src/logging_service
 #
 # Networks:
-#   core = internal (no internet, no LAN): redpanda, taskmanager, jobmanager, poller, sql-client
-#   edge = normal bridge: jobmanager (to publish the UI) + poller (needs the APIs)
+#   core = internal (no internet, no LAN): everything talks here
+#   edge = normal bridge: jobmanager + camunda (published UIs), poller + bridge (internet: APIs, dcrgraphs.net)
+# Published (0.0.0.0 on purpose: reached via the NAS tailnet IP; LAN side firewalled to mgmt):
+#   8081 Flink UI/REST   8088 Camunda web UIs (Operate, Tasklist, Identity)
+# Camunda APIs (gRPC/REST), Elasticsearch, Redpanda, logging service: NOT published. The Camunda API
+# and ES run without authentication and must never be reachable from the LAN.
+#
+# Flink pinned to 2.2.x: no Kafka connector for 2.3 yet (flink-connector-kafka 5.0.0 = Flink 2.1/2.2).
+
+x-flink: &flink
+  image: flink:2.2.1-java17@sha256:55ccb2ad4b98362c3f3503c5a6d7cd00b92eb25e38815ddaf0be5903ade54ffe
+  security_opt: ["no-new-privileges:true"]
+  labels:
+    com.getarcaneapp.arcane.updater: "false"
+
+x-python: &python
+  image: python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+  user: "568:568"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  mem_limit: 128m
+  labels:
+    com.getarcaneapp.arcane.updater: "false"
 
 services:
+  # ================= CEP =================
   jobmanager:
-    image: flink:2.2.1-java17@sha256:55ccb2ad4b98362c3f3503c5a6d7cd00b92eb25e38815ddaf0be5903ade54ffe
+    <<: *flink
     container_name: flink-jobmanager
     command: jobmanager
     ports:
-      - "8081:8081"   # 0.0.0.0 ON PURPOSE (reached via the NAS tailnet IP); LAN side firewalled
+      - "8081:8081"
     environment:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: jobmanager
@@ -40,13 +58,10 @@ services:
         web.cancel.enable: true
     networks: [core, edge]
     mem_limit: 2g
-    security_opt: ["no-new-privileges:true"]
-    labels:
-      com.getarcaneapp.arcane.updater: "false"
     restart: unless-stopped
 
   taskmanager:
-    image: flink:2.2.1-java17@sha256:55ccb2ad4b98362c3f3503c5a6d7cd00b92eb25e38815ddaf0be5903ade54ffe
+    <<: *flink
     container_name: flink-taskmanager
     command: taskmanager
     depends_on: [jobmanager]
@@ -57,15 +72,10 @@ services:
         taskmanager.memory.process.size: 1728m
     networks: [core]
     mem_limit: 2g
-    security_opt: ["no-new-privileges:true"]
-    labels:
-      com.getarcaneapp.arcane.updater: "false"
     restart: unless-stopped
 
-  # Interactive tool, not a service: doesn't start with "Up".
-  # Use: docker compose -f /mnt/fast/apps/stacks/apache-flink-cep/compose.yaml run --rm sql-client
   sql-client:
-    image: flink:2.2.1-java17@sha256:55ccb2ad4b98362c3f3503c5a6d7cd00b92eb25e38815ddaf0be5903ade54ffe
+    <<: *flink
     container_name: flink-sql-client
     command: bin/sql-client.sh
     profiles: ["tools"]
@@ -77,9 +87,6 @@ services:
         jobmanager.rpc.address: jobmanager
         rest.address: jobmanager
     networks: [core]
-    security_opt: ["no-new-privileges:true"]
-    labels:
-      com.getarcaneapp.arcane.updater: "false"
 
   redpanda:
     image: docker.redpanda.com/redpandadata/redpanda:v26.2.6@sha256:8b1076e0d61bfceb66594dc01536427ce0b529f8ead35fdab9763ab6085891ce
@@ -95,9 +102,6 @@ services:
       - --pandaproxy-addr=internal://0.0.0.0:8082
       - --advertise-pandaproxy-addr=internal://redpanda:8082
     volumes:
-      # Dedicated dataset fast/scratch/redpanda with recordsize=4K, owned by the redpanda uid (101).
-      # Redpanda asserts (exit 132) on ZFS's default 128K block size, so a named volume on
-      # fast/ix-apps crash-loops. Outside fast/apps => no snapshots, replication or off-site: on purpose.
       - /mnt/fast/scratch/redpanda:/var/lib/redpanda/data
     networks: [core]
     mem_limit: 1536m
@@ -106,47 +110,137 @@ services:
       com.getarcaneapp.arcane.updater: "false"
     restart: unless-stopped
 
-  # Interactive tool: replays a scenario (backfill.py output) into *.replay topics.
-  # Use: docker compose -f /mnt/fast/apps/stacks/apache-flink-cep/compose.yaml run --rm replayer /scenarios/<name>.jsonl --duration 120
-  replayer:
-    image: python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
-    container_name: flink-replayer
-    profiles: ["tools"]
-    user: "568:568"
-    entrypoint: ["python", "-u", "/app/replay.py", "--proxy", "http://redpanda:8082"]
-    volumes:
-      - ./replay.py:/app/replay.py:ro
-      - ./scenarios:/scenarios:ro
-    networks: [core]          # no internet, no LAN: it only talks to redpanda
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    mem_limit: 128m
-    labels:
-      com.getarcaneapp.arcane.updater: "false"
-
+  # ================= event sources =================
   poller:
-    image: python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+    <<: *python
     container_name: flink-poller
     command: ["python", "-u", "/app/poller.py"]
-    user: "568:568"
     depends_on: [redpanda]
-    env_file: ./.env          # Arcane's project .env (also used for compose interpolation; harmless)
+    env_file: ./.env
     environment:
       PANDAPROXY_URL: http://redpanda:8082
-      BBOX: "-10,35,30,45"        # west,south,east,north. Pick a region that is burning.
-      GRID_STEP_DEG: "5"          # weather points = cells; also the CEP join key
-      OWM_INTERVAL_S: "600"
+      FIRMS_BBOX: "-10,35,30,45"     # fires: big area is cheap (1 call per source)
+      WEATHER_BBOX: "-9,37,-7,39"     # weather + FWI: 1 OWM call per cell per poll -> keep small
+      GRID_STEP_DEG: "0.25"           # global grid; must match backfill --grid
+      FWI_SPINUP_DAYS: "30"
+      OWM_INTERVAL_S: "1800"
       FIRMS_INTERVAL_S: "900"
       FIRMS_SOURCES: "VIIRS_NOAA20_NRT,VIIRS_NOAA21_NRT,VIIRS_SNPP_NRT"
       FIRMS_DAY_RANGE: "1"
     volumes:
-      - ./poller.py:/app/poller.py:ro
+      - /mnt/fast/apps/cep-src/poller.py:/app/poller.py:ro
+      - /mnt/fast/apps/cep-src/fwi.py:/app/fwi.py:ro
     networks: [core, edge]
+    restart: unless-stopped
+
+  replayer:
+    <<: *python
+    container_name: flink-replayer
+    profiles: ["tools"]
+    entrypoint: ["python", "-u", "/app/replay.py", "--proxy", "http://redpanda:8082"]
+    volumes:
+      - /mnt/fast/apps/cep-src/replay.py:/app/replay.py:ro
+      - /mnt/fast/apps/cep-src/scenarios:/scenarios:ro
+    networks: [core]
+
+  # ================= PAIS: Camunda 8.8 Orchestration Cluster =================
+  # One container = Zeebe broker + gateway + Operate + Tasklist + Identity + the Camunda Exporter.
+  # 8.8 no longer has an Operate importer: Operate only shows what the Camunda Exporter writes,
+  # and that exporter is enabled automatically by the CAMUNDA_DATA_SECONDARYSTORAGE_* settings.
+  # (The course example's separate camunda/zeebe + camunda/operate with the legacy
+  # ElasticsearchExporter leaves Operate empty: "Data could not be fetched".)
+  #   Web UI: http://<host>:8088/operate  /tasklist  /identity   (login: users from camunda.env)
+  #   gRPC 26500 (bridge), REST 8080/v2, management 9600: internal only, API unprotected.
+  camunda:
+    image: camunda/camunda:8.8.0
+    container_name: cep-camunda
+    ports:
+      - "8088:8080"            # web UIs only; LAN-firewalled to mgmt (nas-firewall.sh), tailnet via grants
+    env_file: ./camunda.env    # CAMUNDA_SECURITY_INITIALIZATION_USERS_0_* + DEFAULTROLES_ADMIN_USERS_0 (600, Proton Pass)
+    environment:
+      CAMUNDA_DATA_SECONDARYSTORAGE_TYPE: elasticsearch
+      CAMUNDA_DATA_SECONDARYSTORAGE_ELASTICSEARCH_URL: http://elasticsearch:9200
+      CAMUNDA_SECURITY_AUTHENTICATION_METHOD: basic
+      CAMUNDA_SECURITY_AUTHENTICATION_UNPROTECTEDAPI: "true"   # gRPC/REST for the bridge; internal network only
+      CAMUNDA_SECURITY_AUTHORIZATIONS_ENABLED: "false"
+    volumes:
+      - camunda-data:/usr/local/camunda/data
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks: [core, edge]
+    mem_limit: 3g
+    security_opt: ["no-new-privileges:true"]
+    labels:
+      com.getarcaneapp.arcane.updater: "false"
+    restart: unless-stopped
+
+  elasticsearch:
+    # 8.16+ REQUIRED by Camunda 8.8. Stay on 8.x.
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.18.0
+    container_name: cep-elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks: [core]
+    mem_limit: 1536m
+    security_opt: ["no-new-privileges:true"]
+    labels:
+      com.getarcaneapp.arcane.updater: "false"
+    restart: unless-stopped
+
+  # ================= integration =================
+  bridge:
+    image: cep-bridge:local
+    pull_policy: never
+    container_name: cep-bridge
+    tmpfs: [/tmp]        # read-only rootfs; some libs want a writable /tmp
+    depends_on: [redpanda, camunda]
+    env_file: ./bridge.env
+    environment:
+      PANDAPROXY_URL: http://redpanda:8082
+      ZEEBE_ADDRESS: camunda:26500
+      LOGGING_URL: http://logging-service:5010/log
+      MAPPING_FILE: /config/mapping.json
+      BPMN_DIR: /bpmn
+      STATE_FILE: /state/cases.json      # case_key -> instance ids, survives bridge restarts
+    volumes:
+      - /mnt/fast/apps/cep-src/bridge/mapping.json:/config/mapping.json:ro
+      - /mnt/fast/apps/cep-src/bpmn:/bpmn:ro
+      - ./bridge-state:/state            # 750 568:568, create before Up
+    networks: [core, edge]
+    user: "568:568"
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    mem_limit: 128m
+    mem_limit: 256m
+    labels:
+      com.getarcaneapp.arcane.updater: "false"
+    restart: unless-stopped
+
+  logging-service:
+    image: cep-logging:local
+    pull_policy: never
+    container_name: cep-logging
+    tmpfs: [/tmp]        # read-only rootfs; some libs want a writable /tmp
+    volumes:
+      - ./logs:/logs
+      - ./XES:/XES
+    networks: [core]
+    user: "568:568"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
     labels:
       com.getarcaneapp.arcane.updater: "false"
     restart: unless-stopped
@@ -156,3 +250,6 @@ networks:
     internal: true
   edge: {}
 
+volumes:
+  camunda-data: {}    # fast/ix-apps: not backed up. Process state is dev data; models live in git.
+  es-data: {}
