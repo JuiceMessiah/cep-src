@@ -1,12 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  CEP job for Flink 2.2.1 (the cluster image flink:2.2.1-java17). Builds one uber-jar with the
-  Kafka connector + Jackson; Flink itself is "provided" by the cluster.
-
-  Build without installing Java/Maven (NAS, as apps; see README in this folder):
-    docker run --rm -u 568:568 -e HOME=/tmp -v /mnt/fast/apps/cep-src/flink-job:/w -w /w \
-      maven:3.9-eclipse-temurin-17 mvn -B -q -Dmaven.repo.local=/w/.m2repo package
-  -> target/cep-job-1.0.jar
+  CEP job for Flink 2.2.1 (cluster image flink:2.2.1-java17). Builds one uber-jar with the
+  Kafka connector and Jackson; Flink itself is provided by the cluster.
+  How to build and run: README.md in this folder. (No command lines here: XML comments
+  may not contain two dashes in a row, and every CLI option starts with them.)
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
