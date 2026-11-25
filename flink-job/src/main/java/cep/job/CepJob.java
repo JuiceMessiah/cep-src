@@ -36,7 +36,10 @@ import cep.job.Events.ProcEvent;
  *   --idle-s 60                   a topic with no records stops holding back the watermark
  *   --min-detections 3 --window-h 6 --min-danger 2 --clear-h 12
  *   --burn-danger 4 --pre-alert-count 3 --pre-alert-window-min 60 --delivery-timeout-s 120
- *   --dcr-emergency-order EmergencyOrder --dcr-delivery ReceiveEmergencyDelivery   (DCR event ids)
+ *   --dcr-emergency-order "Emergency order" --dcr-delivery "Receive emergency delivery"   (DCR labels)
+ *   --process-patterns true       false = only FireAlert/SceneCleared. Use it for a second job next to
+ *                                 the one that runs the process patterns (e.g. live next to replay):
+ *                                 both read the same alerts/pais topics and would duplicate findings.
  */
 public final class CepJob {
     public static void main(String[] argv) throws Exception {
@@ -88,15 +91,20 @@ public final class CepJob {
                 .keyBy(new Events.ByCell())
                 .process(new EnvPatternFunction(fp)).name("FireAlert / SceneCleared");
 
-        DataStream<ProcEvent> proc = env
-                .fromSource(source(bootstrap, alertsTopic, group + "-alerts", OffsetsInitializer.latest()),
-                        WatermarkStrategy.noWatermarks(), alertsTopic)
-                .union(env.fromSource(source(bootstrap, paisTopic, group + "-pais", OffsetsInitializer.latest()),
-                        WatermarkStrategy.noWatermarks(), paisTopic))
-                .flatMap(new Events.ParseProc()).name("parse alerts + pais");
-        DataStream<String> procAlerts = proc
-                .keyBy(new Events.ByCase())
-                .process(new ProcessPatternFunction(pp)).name("BurnSupplyEmergency / CapacityRedirect");
+        boolean processPatterns = !"false".equalsIgnoreCase(a.getOrDefault("process-patterns", "true"));
+        DataStream<String> out = envAlerts;
+        if (processPatterns) {
+            DataStream<ProcEvent> proc = env
+                    .fromSource(source(bootstrap, alertsTopic, group + "-alerts", OffsetsInitializer.latest()),
+                            WatermarkStrategy.noWatermarks(), alertsTopic)
+                    .union(env.fromSource(source(bootstrap, paisTopic, group + "-pais", OffsetsInitializer.latest()),
+                            WatermarkStrategy.noWatermarks(), paisTopic))
+                    .flatMap(new Events.ParseProc()).name("parse alerts + pais");
+            DataStream<String> procAlerts = proc
+                    .keyBy(new Events.ByCase())
+                    .process(new ProcessPatternFunction(pp)).name("BurnSupplyEmergency / CapacityRedirect");
+            out = envAlerts.union(procAlerts);
+        }
 
         KafkaSink<String> sink = KafkaSink.<String>builder()
                 .setBootstrapServers(bootstrap)
@@ -106,9 +114,9 @@ public final class CepJob {
                         .build())
                 .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
                 .build();
-        envAlerts.union(procAlerts).sinkTo(sink).name(alertsTopic);
+        out.sinkTo(sink).name(alertsTopic);
 
-        env.execute("cep-job (" + suffix + ")");
+        env.execute("cep-job (" + suffix + (processPatterns ? "" : ", env only") + ")");
     }
 
     private static KafkaSource<String> source(String bootstrap, String topic, String group, OffsetsInitializer start) {

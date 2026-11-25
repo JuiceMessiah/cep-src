@@ -59,4 +59,5 @@ The `WARNING: Unknown module: jdk.compiler` lines from the Flink CLI are harmles
 | `--min-detections`, `--window-h`, `--min-danger`, `--clear-h` | 3, 6, 2, 12 | FireAlert / SceneCleared |
 | `--burn-danger`, `--pre-alert-count`, `--pre-alert-window-min` | 4, 3, 60 | BurnSupplyEmergency |
 | `--delivery-timeout-s` | 120 | CapacityRedirect (graph: 24 h, shortened for the demo) |
-| `--dcr-emergency-order`, `--dcr-delivery` | `EmergencyOrder`, `ReceiveEmergencyDelivery` | the DCR event **ids** (fill in once the graph exists) |
+| `--dcr-emergency-order`, `--dcr-delivery` | `Emergency order`, `Receive emergency delivery` | the DCR event **labels** (the bridge names DCR events by label) |
+| `--process-patterns` | `true` | `false` = FireAlert/SceneCleared only. **Exactly one running job may have it on**: every job reads the shared `alerts`/`pais.events` topics, so two would emit each process alert twice (the bridge drops duplicates by `alert_id`, but don't rely on it) |

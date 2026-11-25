@@ -18,7 +18,8 @@ import java.util.Map;
  *                      (pre-alert seen, "Report unit available" not yet). Absence pattern: a timer.
  *
  * Inputs: our own FireAlert / SceneCleared alerts (incident state + danger class) and pais.events.
- * Event names are parameters: the DCR event ids aren't known yet.
+ * Event names are parameters. DCR events arrive under their labels (the bridge names them so),
+ * so recreating the graph on dcrgraphs.net (new ids) doesn't affect the CEP.
  */
 public class ProcessPatternLogic implements Serializable {
     private static final long serialVersionUID = 1L;
@@ -27,8 +28,8 @@ public class ProcessPatternLogic implements Serializable {
         public String mci = "Activate MCI protocol";
         public String preAlert = "Send EMS pre-alert";
         public String unitAvailable = "Report unit available";
-        public String emergencyOrder = "EmergencyOrder";             // DCR event id, TBD
-        public String delivery = "ReceiveEmergencyDelivery";         // DCR event id, TBD
+        public String emergencyOrder = "Emergency order";            // DCR event LABEL (the bridge names
+        public String delivery = "Receive emergency delivery";       // DCR events by label, not id)
         public int burnDanger = 4;
         public int preAlertCount = 3;
         public long preAlertWindowMs = 60 * 60_000L;
