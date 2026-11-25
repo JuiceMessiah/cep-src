@@ -148,7 +148,11 @@ Variables in every instance started or touched by the CEP: `caseKey`, `alertType
 
 ## 6. `bridge/mapping.json`
 
-The only file that connects alert types to models. No Python changes needed for new models. Target state once the models exist (DCR event IDs to be filled in):
+The only file that connects alert types to models. No Python changes needed for new models.
+
+> **Temporary (until `ambulance_fire_response` is delivered):** `FireAlert` and `SceneCleared` are mapped onto the smoke-test process so the chain can be demonstrated end to end: `FireAlert` → `correlate_message` `SmokeStart` (log activity *Fire risk detected*), `SceneCleared` → `publish_message` `FireUpdate`, `ttl_s` 60 (log activity *Fire update received*), both `process_id` `cep_smoke_test`. Replace them with the target entries below once the real BPMN is in `bpmn/`.
+
+Target state once the models exist (DCR event IDs to be filled in):
 
 ```json
 {
