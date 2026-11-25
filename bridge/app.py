@@ -103,15 +103,18 @@ async def setup_zeebe(bridge):
     if not files:
         log(f"no *.bpmn in {BPMN_DIR}: nothing deployed (processes must be deployed some other way)")
     for path in files:
-        for attempt in range(1, 31):
+        # The 8.8 orchestration cluster (Zeebe + Operate + Tasklist + exporter) needs 1-2 min to accept
+        # deployments after a cold start: retry for up to ~3 min, logging every 10th attempt.
+        for attempt in range(1, 91):
             try:
                 await client.deploy_process(path)
                 log(f"deployed {os.path.basename(path)}")
                 break
             except Exception as e:
-                if attempt == 30:
+                if attempt == 90:
                     raise
-                log(f"deploy {os.path.basename(path)} attempt {attempt} failed: {e!r}")
+                if attempt == 1 or attempt % 10 == 0:
+                    log(f"deploy {os.path.basename(path)}: Camunda not ready yet (attempt {attempt}/90: {e!r})")
                 await asyncio.sleep(2)
     return ZeebeAdapter(client), worker
 
