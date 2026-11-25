@@ -7,6 +7,7 @@
 #       compose.yaml   640 568:568   (copy of the repo's compose.yaml)
 #       .env           600 568:568   OWM_API_KEY, FIRMS_MAP_KEY
 #       bridge.env     600 568:568   DCR_ENABLED, DCR_GRAPH_ID, DCR_USERNAME, DCR_PASSWORD
+#       camunda.env    600 568:568   Camunda web login (initial admin user), see camunda.env.template
 #       XES/, logs/    750 568:568   logging service output (on fast/apps -> snapshotted)
 #       bridge-state/  750 568:568   bridge case map (cases.json)
 #   /mnt/fast/scratch/redpanda                    dataset, recordsize=4K, 750 101:101 (Redpanda asserts on 128K)
@@ -17,11 +18,11 @@
 #
 # Networks:
 #   core = internal (no internet, no LAN): everything talks here
-#   edge = normal bridge: jobmanager + operate (published UIs), poller + bridge (internet: APIs, dcrgraphs.net)
+#   edge = normal bridge: jobmanager + camunda (published UIs), poller + bridge (internet: APIs, dcrgraphs.net)
 # Published (0.0.0.0 on purpose: reached via the NAS tailnet IP; LAN side firewalled to mgmt):
-#   8081 Flink UI/REST   8088 Camunda Operate
-# Zeebe, Elasticsearch, Redpanda, logging service: NOT published. Zeebe's API and ES run without
-# authentication (as in the course example) and must never be reachable from the LAN.
+#   8081 Flink UI/REST   8088 Camunda web UIs (Operate, Tasklist, Identity)
+# Camunda APIs (gRPC/REST), Elasticsearch, Redpanda, logging service: NOT published. The Camunda API
+# and ES run without authentication and must never be reachable from the LAN.
 #
 # Flink pinned to 2.2.x: no Kafka connector for 2.3 yet (flink-connector-kafka 5.0.0 = Flink 2.1/2.2).
 
@@ -139,28 +140,40 @@ services:
       - /mnt/fast/apps/cep-src/scenarios:/scenarios:ro
     networks: [core]
 
-  # ================= PAIS: Camunda 8.8 (settings from the course example) =================
-  zeebe:
-    image: camunda/zeebe:8.8.0
-    container_name: cep-zeebe
+  # ================= PAIS: Camunda 8.8 Orchestration Cluster =================
+  # One container = Zeebe broker + gateway + Operate + Tasklist + Identity + the Camunda Exporter.
+  # 8.8 no longer has an Operate importer: Operate only shows what the Camunda Exporter writes,
+  # and that exporter is enabled automatically by the CAMUNDA_DATA_SECONDARYSTORAGE_* settings.
+  # (The course example's separate camunda/zeebe + camunda/operate with the legacy
+  # ElasticsearchExporter leaves Operate empty: "Data could not be fetched".)
+  #   Web UI: http://<host>:8088/operate  /tasklist  /identity   (login: users from camunda.env)
+  #   gRPC 26500 (bridge), REST 8080/v2, management 9600: internal only, API unprotected.
+  camunda:
+    image: camunda/camunda:8.8.0
+    container_name: cep-camunda
+    ports:
+      - "8088:8080"            # web UIs only; LAN-firewalled to mgmt (nas-firewall.sh), tailnet via grants
+    env_file: ./camunda.env    # CAMUNDA_SECURITY_INITIALIZATION_USERS_0_* + DEFAULTROLES_ADMIN_USERS_0 (600, Proton Pass)
     environment:
-      CAMUNDA_SECURITY_AUTHENTICATION_UNPROTECTEDAPI: "true"
+      CAMUNDA_DATA_SECONDARYSTORAGE_TYPE: elasticsearch
+      CAMUNDA_DATA_SECONDARYSTORAGE_ELASTICSEARCH_URL: http://elasticsearch:9200
+      CAMUNDA_SECURITY_AUTHENTICATION_METHOD: basic
+      CAMUNDA_SECURITY_AUTHENTICATION_UNPROTECTEDAPI: "true"   # gRPC/REST for the bridge; internal network only
       CAMUNDA_SECURITY_AUTHORIZATIONS_ENABLED: "false"
-      ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_CLASSNAME: io.camunda.zeebe.exporter.ElasticsearchExporter
-      ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_URL: http://elasticsearch:9200
     volumes:
-      - zeebe-data:/usr/local/zeebe/data
-    depends_on: [elasticsearch]
-    networks: [core]
-    mem_limit: 2g
+      - camunda-data:/usr/local/camunda/data
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks: [core, edge]
+    mem_limit: 3g
     security_opt: ["no-new-privileges:true"]
     labels:
       com.getarcaneapp.arcane.updater: "false"
     restart: unless-stopped
 
   elasticsearch:
-    # 8.16+ REQUIRED by Camunda 8.8 (the course example's 8.15.0 makes Operate crash with
-    # MissingRequiredPropertyException 'HealthResponse.unassignedPrimaryShards'). Stay on 8.x.
+    # 8.16+ REQUIRED by Camunda 8.8. Stay on 8.x.
     image: docker.elastic.co/elasticsearch/elasticsearch:8.18.0
     container_name: cep-elasticsearch
     environment:
@@ -182,38 +195,17 @@ services:
       com.getarcaneapp.arcane.updater: "false"
     restart: unless-stopped
 
-  operate:
-    image: camunda/operate:8.8.0
-    container_name: cep-operate
-    ports:
-      - "8088:8080"
-    depends_on:
-      zeebe:
-        condition: service_started
-      elasticsearch:
-        condition: service_healthy
-    environment:
-      CAMUNDA_OPERATE_ZEEBE_GATEWAYADDRESS: zeebe:26500
-      CAMUNDA_OPERATE_ELASTICSEARCH_URL: http://elasticsearch:9200
-      CAMUNDA_DATA_SECONDARY_STORAGE_ELASTICSEARCH_URL: http://elasticsearch:9200
-    networks: [core, edge]
-    mem_limit: 1536m
-    security_opt: ["no-new-privileges:true"]
-    labels:
-      com.getarcaneapp.arcane.updater: "false"
-    restart: unless-stopped
-
   # ================= integration =================
   bridge:
     image: cep-bridge:local
     pull_policy: never
     container_name: cep-bridge
     tmpfs: [/tmp]        # read-only rootfs; some libs want a writable /tmp
-    depends_on: [redpanda, zeebe]
+    depends_on: [redpanda, camunda]
     env_file: ./bridge.env
     environment:
       PANDAPROXY_URL: http://redpanda:8082
-      ZEEBE_ADDRESS: zeebe:26500
+      ZEEBE_ADDRESS: camunda:26500
       LOGGING_URL: http://logging-service:5010/log
       MAPPING_FILE: /config/mapping.json
       BPMN_DIR: /bpmn
@@ -256,5 +248,5 @@ networks:
   edge: {}
 
 volumes:
-  zeebe-data: {}      # fast/ix-apps: not backed up. Process state is dev data; models live in git.
+  camunda-data: {}    # fast/ix-apps: not backed up. Process state is dev data; models live in git.
   es-data: {}
