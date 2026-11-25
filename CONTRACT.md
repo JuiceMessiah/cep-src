@@ -104,7 +104,7 @@ Parameters in *italics* are Flink job arguments; the values are the defaults (`f
 
 | Alert type | Pattern | Inputs | Triggers |
 |---|---|---|---|
-| **`FireAlert`** | ≥ *3* FIRMS detections (confidence not `l`) in one cell within *6 h*, **while** that cell's current FWI `danger_class` ≥ *2* (Moderate). Once per incident; creates the incident key. | firms + fwi | BPMN `ambulance_fire_response`: message start **Mass fire alert received** |
+| **`FireAlert`** | ≥ *3* FIRMS detections (confidence not `l`) in one cell within *6 h*, **while** that cell's current FWI `danger_class` ≥ *2* (Moderate). Once per incident; creates the incident key. | firms + fwi | BPMN `Ambulance_process`: message start **Major fire alert received** |
 | **`SceneCleared`** | Active incident, and **no** detection in its cell or the 8 neighbouring cells for *12 h* (absence pattern, event-time timer; replays end with a heartbeat so it can fire). Ends the incident. | firms (absence) | BPMN: message **Await scene cleared** |
 | **`BurnSupplyEmergency`** | PAIS `Activate MCI protocol` for an incident **and** (that cell's `danger_class` ≥ *4* **or** ≥ *3* × `Send EMS pre-alert` for the incident within *60 min* wall clock). Once per incident. | pais.events + fwi | DCR purchasing: new case + **Declare Emergency Procurement** |
 | **`CapacityRedirect`** | DCR `Emergency order` for an incident **not followed by** `Receive emergency delivery` within *2 min* wall clock (graph deadline PT24H, shortened for the demo), **while** the incident is active. One alert **per unit en route** (`Send EMS pre-alert` seen, `Report unit available` not yet). | pais.events (both engines) | BPMN: message **Destination changed** for that unit |
@@ -113,28 +113,37 @@ Parameters in *italics* are Flink job arguments; the values are the defaults (`f
 
 ## 5. What the modelling team delivers
 
-### 5.1 BPMN `ambulance_fire_response` (Camunda 8.8)
+### 5.1 BPMN `bpmn/ambulance_fire_response.bpmn` (process `Ambulance_process`, Camunda 8.8)
 
-Put the `.bpmn` (and any `.dmn`) in `bpmn/`: the bridge deploys everything there at start. Process **ID** (not the name) `ambulance_fire_response`, `isExecutable="true"`.
+The modellers' model with Camunda execution settings added (layout and names unchanged). Everything in `bpmn/` (`.bpmn` + `.dmn`) is deployed by the bridge at start, in one atomic deployment. `tests/test_models.py` checks offline what Camunda would reject: run it after every model change.
 
 **Envelopes = the events the process exchanges with the CEP.**
 
-| Element | BPMN type | Modellers set | Bridge does |
+| Element | BPMN type | Setting | Bridge does |
 |---|---|---|---|
-| Mass fire alert received | **message start event** | message name `FireAlert`, correlation key `=caseKey` | correlates `FireAlert` alerts; one running instance per incident (Zeebe enforces this) |
-| Await scene cleared | message catch / receive task | message `SceneCleared`, key `=caseKey` | correlates `SceneCleared` alerts |
-| Destination changed | message catch (boundary or intermediate) **inside the per-unit subprocess** | message `DestinationChanged`, key **`=caseKey + "|" + unitId`** | publishes one message per unit from `CapacityRedirect` |
-| Activate MCI protocol, Request units from neighbouring region, Notify dispatcher of delay, Send EMS pre-alert, Report unit available | **send task** (or message throw event) | job **type `cep-event`**, task header **`activity`** = the element name (Modeler: *Headers* panel, key `activity`) | completes the job and reports the activity on `pais.events` and in the XES log, with `caseKey` and the variables listed in `mapping.json` (`unitId`, …) |
+| Major fire alert received | message start event | message `FireAlert` | `FireAlert` alert → REST correlation; one running instance per incident (Zeebe enforces this) |
+| Await scene cleared | receive task | message `SceneCleared`, key `=caseKey` | `SceneCleared` alert → publish, **buffered 24 h** (`ttl_s` 86400): the task only opens after all missions end, the alert usually comes earlier |
+| Destination changed | interrupting message boundary on *Transport patient*, inside the per-unit subprocess | message `DestinationChanged`, key **`=caseKey + "\|" + unitId`** | `CapacityRedirect` alert → one message per unit, `ttl_s` 0 (only a unit that is transporting right now can be redirected) |
+| Activate MCI protocol, Request units from neighbouring region, Notify dispatcher of delay, Send EMS pre-alert, Report unit available | send task | job type `cep-event`, task header `activity` = element name | completes the job, reports the activity on `pais.events` + XES, with `caseKey` and `unitId` |
 
-Why `|unitId` on "Destination changed": Zeebe correlates a message to **only one** subscription per process, *even within one instance* ([Camunda docs, Messages](https://docs.camunda.io/docs/components/concepts/messages/)). With one subscription per ambulance in a multi-instance subprocess, a plain `=caseKey` would redirect one random ambulance. So: the multi-instance subprocess needs an input element variable **`unitId`** (e.g. `inputCollection = =units`, `inputElement = unitId`), which "Send EMS pre-alert" / "Report unit available" then report automatically (`unitId` is in the `cep-event` variables list), so the CEP knows which units are en route. Need another variable reported (e.g. `patients`)? Tell the backend team; it's one entry in `mapping.json`.
+Why `|unitId` on "Destination changed": Zeebe correlates a message to **only one** subscription per process, *even within one instance* ([Camunda docs, Messages](https://docs.camunda.io/docs/components/concepts/messages/)). With one subscription per ambulance, a plain `=caseKey` would redirect one random ambulance.
 
-**Other tasks block the process until something completes them:**
+**Decisions and data (rule-based; group decision 2026-11-25):**
 
-- **Business rule tasks** (Determine units needed, Select destination hospital): a DMN decision (FEEL decision table) deployed alongside: `.dmn` file in `bpmn/`, task property *Called decision* = the decision ID, *Result variable* e.g. `unitsNeeded`. Input variables available: `severity`, `alert` (whole alert, so `alert.details.danger_class`, `alert.details.frp_max`, …), plus whatever earlier tasks set.
-- **User tasks**: completed by hand in Tasklist (`http://<host>:8088/tasklist`). Keep the forms trivial; every click is screencast time.
-- **Service tasks** (Check unit availability): need a job worker. Simplest: make it a DMN/script task, or tell the backend team the type and what it should return.
+| Element | Setting | Result |
+|---|---|---|
+| Mass casualty incident? | `=alert.details.danger_class >= 4 or alert.details.detections >= 10`, else "No" (default) | MCI path (→ `BurnSupplyEmergency` input) |
+| Determine units needed | DMN `determine_units` (`bpmn/determine-units.dmn`) → `unitsNeeded` | 2 if danger class ≥ 4, else 1 (kept small: each unit = 7 user tasks in the demo) |
+| Check unit availability | job type `check-unit-availability`, **simulated** by the bridge (`set: {unitsAvailable: 1}`, logged, not sent to Flink) | so 2 units needed → "Request units from neighbouring region" |
+| Enough units? | "No" = `=unitsAvailable < unitsNeeded`, "Yes" default | |
+| Ambulance mission (one per unit) | `inputCollection = =for i in 1..unitsNeeded return "amb-" + string(i)`, `inputElement = unitId` | `amb-1`, `amb-2`, … per incident |
+| Select destination hospital | DMN `select_destination` (`bpmn/select-destination.dmn`) → `destination` | "Regional burn centre" if danger class ≥ 3, else "Nearest emergency department" (fictional) |
+| More patients at scene? | "Yes" = `=is defined(morePatients) and morePatients = true`, "No" default | set `morePatients = true` when completing *Clean, decontaminate and restock* to loop |
+| All user tasks | Camunda user tasks (`zeebe:userTask`): job-worker user tasks are invisible in Tasklist 8.8 | completed by hand in Tasklist (`:8088/tasklist`) |
 
-Variables in every instance started or touched by the CEP: `caseKey`, `alertType`, `alertId`, `severity`, `cepEventTime`, `alert`.
+Variables in every instance started or touched by the CEP: `caseKey`, `alertType`, `alertId`, `severity`, `cepEventTime`, `alert` (the whole alert: `alert.details.danger_class`, `.detections`, `.frp_max`, …).
+
+**Re-running a scenario reuses the incident keys** (they're deterministic): wipe Camunda first (runbook clean slate), or the old instances and buffered `SceneCleared` messages interfere.
 
 ### 5.2 DCR graph: emergency equipment purchasing (dcrgraphs.net)
 
@@ -148,45 +157,45 @@ Variables in every instance started or touched by the CEP: `caseKey`, `alertType
 
 ## 6. `bridge/mapping.json`
 
-The only file that connects alert types to models. No Python changes needed for new models.
-
-> **Temporary (until `ambulance_fire_response` is delivered):** `FireAlert` and `SceneCleared` are mapped onto the smoke-test process so the chain can be demonstrated end to end: `FireAlert` → `correlate_message` `SmokeStart` (log activity *Fire risk detected*), `SceneCleared` → `publish_message` `FireUpdate`, `ttl_s` 60 (log activity *Fire update received*), both `process_id` `cep_smoke_test`. Replace them with the target entries below once the real BPMN is in `bpmn/`.
-
-Target state once the models exist (DCR event IDs to be filled in):
+The only file that connects alert types to models. No Python changes needed for new models. Current entries (the DCR event id is filled in once the graph is on dcrgraphs.net; `tools/dcr_probe.py` prints it):
 
 ```json
 {
   "on_alert": {
     "FireAlert": [
       { "engine": "zeebe", "action": "correlate_message", "message": "FireAlert",
-        "process_id": "ambulance_fire_response", "log_activity": "Mass fire alert received" }
+        "process_id": "Ambulance_process", "log_activity": "Major fire alert received" }
     ],
     "SceneCleared": [
-      { "engine": "zeebe", "action": "publish_message", "message": "SceneCleared",
-        "process_id": "ambulance_fire_response", "log_activity": "Await scene cleared" }
-    ],
-    "BurnSupplyEmergency": [
-      { "engine": "dcr", "action": "start_case", "event_id": "<DeclareEmergencyProcurement id>",
-        "log_activity": "Declare Emergency Procurement" }
+      { "engine": "zeebe", "action": "publish_message", "message": "SceneCleared", "ttl_s": 86400,
+        "process_id": "Ambulance_process", "log_activity": "Await scene cleared" }
     ],
     "CapacityRedirect": [
       { "engine": "zeebe", "action": "publish_message", "message": "DestinationChanged",
         "correlation_key": "{case_key}|{details.unit_id}", "ttl_s": 0,
-        "process_id": "ambulance_fire_response", "log_activity": "Destination changed" }
+        "process_id": "Ambulance_process", "log_activity": "Destination changed" }
+    ],
+    "BurnSupplyEmergency": [
+      { "engine": "dcr", "action": "start_case", "event_id": "SET_ME_DeclareEmergencyProcurement",
+        "log_activity": "" }
     ]
   },
   "zeebe_tasks": {
-    "cep-event": { "activity_from_header": "activity", "variables": ["unitId"], "emit": true }
+    "cep-event": { "activity_from_header": "activity", "variables": ["unitId"], "emit": true },
+    "check-unit-availability": { "activity": "Check unit availability", "emit": false,
+                                 "set": { "unitsAvailable": 1 } }
   },
-  "dcr_watch": { "poll_s": 5, "events": ["<EmergencyOrder id>", "<ReceiveEmergencyDelivery id>"] }
+  "dcr_watch": { "poll_s": 5, "events": [] }
 }
 ```
+
+The `SmokeTest`/`SmokeTestUpdate` entries (smoke-test process) stay for plumbing tests.
 
 | Field | Meaning |
 |---|---|
 | `start_process` | start a new BPMN instance (none start event) |
 | `correlate_message` | message **start** or catch event via Camunda REST `/v2/messages/correlation`: returns the instance key, so the trace is complete from the first event |
-| `publish_message` | send a message (gRPC publish); `correlation_key` template, default `{case_key}`; `ttl_s` how long Zeebe buffers it (0 = drop if nobody waits) |
+| `publish_message` | send a message (REST `/v2/messages/publication`); `correlation_key` template, default `{case_key}`; `ttl_s` how long Zeebe buffers it (0 = drop if nobody waits) |
 | `start_case` / `execute` | DCR: new sim (+ optional `event_id`) / execute `event_id` in this incident's case |
 | `log_activity` | name of the CEP trigger in the XES trace; `""` = don't log (not an activity of that model) |
 | `zeebe_tasks.<type>` | worker per job type; `activity` fixed, or `activity_from_header` read from the task header (missing header: the job still completes, the event carries an `error`) |

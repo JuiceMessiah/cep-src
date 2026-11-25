@@ -21,7 +21,7 @@ This repo is the backend: event sources → Redpanda → Flink CEP → bridge �
 ## Tests: run before every commit
 
 ```bash
-python3 tests/test_fwi.py && python3 tests/test_rest.py && python3 tests/test_offline.py && python3 tests/test_lifecycle.py
+python3 tests/test_models.py && python3 tests/test_fwi.py && python3 tests/test_rest.py && python3 tests/test_offline.py && python3 tests/test_lifecycle.py
 sh flink-job/test-core.sh
 ```
 
@@ -32,6 +32,7 @@ Build the Flink jar: see `flink-job/README.md` (Maven in a container works; no l
 
 - **No secrets in this repo, ever** (public). Keys live in `.env` / `bridge.env` / `camunda.env`, which are gitignored; only `*.env.template` is committed. Never print key values; check them by length/shape only. A leaked key gets revoked, not just deleted.
 - **XML comments must not contain `--`** (pom.xml, BPMN, DMN): Maven refuses to parse them.
+- **After any change in `bpmn/` or `bridge/mapping.json`, run `tests/test_models.py`**: it catches what Camunda would reject at deployment and mapping entries that point at messages/names not in the model.
 - Python services are stdlib-only where they already are (poller, fwi, backfill, replay): keep it that way.
 - Grid cells are global 0.25° ids `c{row}_{col}` (origin 90S/180W); incident key `inc-<cell>-<yyyyMMdd'T'HHmm>`. Must stay identical in poller, backfill and the Flink job.
 - Environment patterns run on **event time** (replays must behave like live data); process patterns on **wall clock**. Don't mix.

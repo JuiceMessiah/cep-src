@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Business rule task "Select destination hospital" (ambulance_fire_response.bpmn), once per unit.
+     Input: the CEP FireAlert in process variable alert. Output: destination (string).
+     Fictional hospital names on purpose. -->
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+             xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+             id="Definitions_select_destination" name="Select destination hospital"
+             namespace="http://camunda.org/schema/1.0/dmn"
+             modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.8.0">
+  <decision id="select_destination" name="Select destination hospital">
+    <decisionTable id="DecisionTable_destination" hitPolicy="FIRST">
+      <input id="Input_danger" label="Fire danger class">
+        <inputExpression id="InputExpression_danger" typeRef="number">
+          <text>alert.details.danger_class</text>
+        </inputExpression>
+      </input>
+      <output id="Output_destination" label="Destination" name="destination" typeRef="string" />
+      <rule id="Rule_burns">
+        <description>High danger and above: expect severe burns</description>
+        <inputEntry id="In_burns"><text>&gt;= 3</text></inputEntry>
+        <outputEntry id="Out_burns"><text>"Regional burn centre"</text></outputEntry>
+      </rule>
+      <rule id="Rule_other">
+        <description>Otherwise: nearest emergency department</description>
+        <inputEntry id="In_other"><text>-</text></inputEntry>
+        <outputEntry id="Out_other"><text>"Nearest emergency department"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+</definitions>
