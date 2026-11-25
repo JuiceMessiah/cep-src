@@ -119,26 +119,17 @@ services:
     env_file: ./.env
     environment:
       PANDAPROXY_URL: http://redpanda:8082
-<<<<<<< HEAD
       FIRMS_BBOX: "-10,35,30,45"     # fires: big area is cheap (1 call per source)
       WEATHER_BBOX: "-9,37,-7,39"     # weather + FWI: 1 OWM call per cell per poll -> keep small
       GRID_STEP_DEG: "0.25"           # global grid; must match backfill --grid
       FWI_SPINUP_DAYS: "30"
       OWM_INTERVAL_S: "1800"
-=======
-      BBOX: "-10,35,30,45"
-      GRID_STEP_DEG: "5"
-      OWM_INTERVAL_S: "600"
->>>>>>> 0a1127471d93249b4db66e55da3b8e39d35220a4
       FIRMS_INTERVAL_S: "900"
       FIRMS_SOURCES: "VIIRS_NOAA20_NRT,VIIRS_NOAA21_NRT,VIIRS_SNPP_NRT"
       FIRMS_DAY_RANGE: "1"
     volumes:
       - /mnt/fast/apps/cep-src/poller.py:/app/poller.py:ro
-<<<<<<< HEAD
       - /mnt/fast/apps/cep-src/fwi.py:/app/fwi.py:ro
-=======
->>>>>>> 0a1127471d93249b4db66e55da3b8e39d35220a4
     networks: [core, edge]
     restart: unless-stopped
 
