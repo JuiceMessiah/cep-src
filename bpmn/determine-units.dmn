@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Business rule task "Determine units needed" (ambulance_fire_response.bpmn).
+     Input: the CEP FireAlert in process variable alert. Output: unitsNeeded (number).
+     Kept at 1 or 2 on purpose: every unit is a multi-instance mission of 7 user tasks
+     in the demo. Raise the outputs for a more realistic simulation. -->
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+             xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+             id="Definitions_determine_units" name="Determine units needed"
+             namespace="http://camunda.org/schema/1.0/dmn"
+             modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.8.0">
+  <decision id="determine_units" name="Determine units needed">
+    <decisionTable id="DecisionTable_units" hitPolicy="FIRST">
+      <input id="Input_danger" label="Fire danger class">
+        <inputExpression id="InputExpression_danger" typeRef="number">
+          <text>alert.details.danger_class</text>
+        </inputExpression>
+      </input>
+      <output id="Output_units" label="Units needed" name="unitsNeeded" typeRef="number" />
+      <rule id="Rule_very_high">
+        <description>Very high or extreme danger: two units</description>
+        <inputEntry id="In_very_high"><text>&gt;= 4</text></inputEntry>
+        <outputEntry id="Out_very_high"><text>2</text></outputEntry>
+      </rule>
+      <rule id="Rule_other">
+        <description>Everything else: one unit</description>
+        <inputEntry id="In_other"><text>-</text></inputEntry>
+        <outputEntry id="Out_other"><text>1</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+</definitions>
