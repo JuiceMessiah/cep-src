@@ -30,7 +30,7 @@ sh test-core.sh                 # OK: 42 checks
 
 ```bash
 cd /mnt/fast/apps/cep-src/flink-job
-docker run --rm -u 568:568 -e HOME=/tmp -v "$PWD":/w -w /w maven:3.9-eclipse-temurin-17 \
+docker run --rm -u 568:568 -e HOME=/tmp -e MAVEN_CONFIG=/tmp/.m2 -v "$PWD":/w -w /w maven:3.9-eclipse-temurin-17 \
   sh -c 'sh test-core.sh && mvn -B -q -Dmaven.repo.local=/w/.m2repo package'
 ls -l target/cep-job-1.0.jar
 ```

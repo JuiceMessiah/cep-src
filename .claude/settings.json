@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "defaultMode": "default",
+    "deny": [
+      "Read(.env)",
+      "Read(**/.env)",
+      "Read(**/*.env)",
+      "Read(**/bridge.env)",
+      "Read(**/camunda.env)"
+    ],
+    "allow": [
+      "Bash(python3 tests/test_fwi.py)",
+      "Bash(python3 tests/test_rest.py)",
+      "Bash(python3 tests/test_offline.py)",
+      "Bash(python3 tests/test_lifecycle.py)",
+      "Bash(sh flink-job/test-core.sh)",
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
+    ]
+  }
+}
