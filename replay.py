@@ -89,8 +89,9 @@ def main():
     ap.add_argument("--suffix", default="replay", help="topic suffix (default: replay)")
     ap.add_argument("--rebase-now", action="store_true",
                     help="shift event times so the scenario starts now (relative timing kept)")
-    ap.add_argument("--heartbeat-h", type=float, default=6.0,
-                    help="heartbeat this many event-time hours after the last event (0 = off)")
+    ap.add_argument("--heartbeat-h", type=float, default=13.0,
+                    help="heartbeat this many event-time hours after the last event (0 = off). Must exceed "
+                         "the CEP job's --clear-h (12) or SceneCleared never fires at the end of a replay")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 

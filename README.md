@@ -13,6 +13,7 @@ Backend for the 02268 group project: external event sources (NASA FIRMS, OpenWea
 | `fwi.py` | Canadian Fire Weather Index (Van Wagner & Pickett 1985), used by poller and backfill | |
 | `backfill.py` | builds a scenario file from a **real past fire** (FIRMS + historical weather + FWI) | laptop with internet + own API keys |
 | `replay.py` | replays a scenario into `*.replay` topics, time-compressed, original event times | server, laptop |
+| `flink-job/` | **the CEP job**: the four patterns (logic in plain Java + Flink wiring); see its README | NAS / laptop Flink |
 | `bridge/` | alerts → Zeebe/DCR; Zeebe jobs + DCR results → `pais.events`; everything → logging | laptop (next to Camunda) |
 | `bridge/mapping.json` | **which alert does what in which model**: filled in by the modelling team | |
 | `logging_service/` | XES log per process (based on the course example) | laptop |

@@ -100,7 +100,7 @@ Events the bridge produces on its own: `ProcessStarted` (Camunda), `CaseCreated`
 
 ## 4. CEP patterns
 
-Parameters in *italics* are Flink job arguments; the values are the defaults.
+Parameters in *italics* are Flink job arguments; the values are the defaults (`flink-job/README.md`). DCR event ids are job arguments too, since the graph doesn't exist yet.
 
 | Alert type | Pattern | Inputs | Triggers |
 |---|---|---|---|
@@ -208,5 +208,5 @@ The only file that connects alert types to models. No Python changes needed for 
 | Bridge: `start_process`, `publish_message`, DCR `start_case`/`execute`, fixed-activity workers, XES | ✅ built, running on the server |
 | Bridge: `cep-event` header workers, `correlate_message` (REST), `correlation_key` template + `ttl_s`, `.bpmn`+`.dmn`+`.form` deployment (REST, atomic) | ✅ built, offline tests; smoke test v2 exercises all of it on the server |
 | Bridge: `dcr_watch` polling | ✅ built + tested against a fake DCR API; needs `executed` in the real API's events XML: check with `tools/dcr_probe.py` once credentials exist |
-| Flink jobs for the four patterns | 🚧 next |
+| Flink job for the four patterns (`flink-job/`) | ✅ logic built + tested (`test-core.sh`); Flink wiring compiles against stand-ins, first real build on the NAS pending |
 | BPMN with the conventions above, DMN tables, DCR graph + IDs + API account | modelling team |
