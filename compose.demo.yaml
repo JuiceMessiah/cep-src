@@ -7,13 +7,13 @@
 #   docker compose -f compose.demo.yaml run --rm replayer /scenarios/<name>.jsonl --duration 90
 #   docker compose -f compose.demo.yaml down -v      # clean slate before a take
 #
-# UIs:   Flink http://localhost:8081   Operate http://localhost:8088 (demo/demo)
+# UIs:   Flink http://localhost:8081   Camunda http://localhost:8088/operate (demo/demo), /tasklist
 #        logging service http://localhost:5010/events   XES files in ./XES
-# Host:  Kafka localhost:19092   Redpanda HTTP proxy http://localhost:18082   Zeebe gRPC localhost:26500
+# Host:  Kafka localhost:19092   Redpanda HTTP proxy http://localhost:18082   Camunda gRPC localhost:26500
 #
-# Camunda part copied from the course example (POESS-example/BPMN): Zeebe 8.8.0 +
-# Elasticsearch + Operate. Operate moved from 8081 to 8088 (8081 = Flink UI).
-# Its security is OFF (unprotected API, ES without auth): fine on 127.0.0.1, never on a LAN.
+# Camunda: 8.8 Orchestration Cluster (camunda/camunda) + Elasticsearch 8.18. NOT the course example's
+# split zeebe/operate setup: with 8.8 that leaves Operate empty, and ES 8.15 crashes Operate.
+# Web UIs on 8088 (8081 = Flink UI). API unprotected, ES without auth: fine on 127.0.0.1, never on a LAN.
 # RAM: roughly 7-8 GB for everything. 16 GB laptop recommended for the demo.
 
 name: cep-demo
@@ -86,23 +86,31 @@ services:
         taskmanager.numberOfTaskSlots: 2
         taskmanager.memory.process.size: 1728m
 
-  # ---------------- PAIS: Camunda 8 (from the course example) ----------------
-  zeebe:
-    image: camunda/zeebe:8.8.0
+  # ---------------- PAIS: Camunda 8.8 Orchestration Cluster ----------------
+  # One container: Zeebe + Operate + Tasklist + Identity + Camunda Exporter (see compose.yaml for why).
+  # Login demo/demo on the laptop (127.0.0.1 only).
+  camunda:
+    image: camunda/camunda:8.8.0
     ports:
-      - "127.0.0.1:26500:26500"
-      - "127.0.0.1:9600:9600"
+      - "127.0.0.1:8088:8080"     # http://localhost:8088/operate  /tasklist
+      - "127.0.0.1:26500:26500"   # gRPC, e.g. Camunda Modeler "Deploy" on the laptop
     environment:
+      CAMUNDA_DATA_SECONDARYSTORAGE_TYPE: elasticsearch
+      CAMUNDA_DATA_SECONDARYSTORAGE_ELASTICSEARCH_URL: http://elasticsearch:9200
+      CAMUNDA_SECURITY_AUTHENTICATION_METHOD: basic
       CAMUNDA_SECURITY_AUTHENTICATION_UNPROTECTEDAPI: "true"
       CAMUNDA_SECURITY_AUTHORIZATIONS_ENABLED: "false"
-      ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_CLASSNAME: io.camunda.zeebe.exporter.ElasticsearchExporter
-      ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_URL: http://elasticsearch:9200
+      CAMUNDA_SECURITY_INITIALIZATION_USERS_0_USERNAME: demo
+      CAMUNDA_SECURITY_INITIALIZATION_USERS_0_PASSWORD: demo
+      CAMUNDA_SECURITY_INITIALIZATION_USERS_0_NAME: Demo
+      CAMUNDA_SECURITY_INITIALIZATION_USERS_0_EMAIL: demo@example.com
+      CAMUNDA_SECURITY_INITIALIZATION_DEFAULTROLES_ADMIN_USERS_0: demo
     depends_on:
-      - elasticsearch
+      elasticsearch:
+        condition: service_healthy
 
   elasticsearch:
-    # 8.16+ REQUIRED by Camunda 8.8 (the course example's 8.15.0 makes Operate crash with
-    # MissingRequiredPropertyException 'HealthResponse.unassignedPrimaryShards'). Stay on 8.x.
+    # 8.16+ REQUIRED by Camunda 8.8 (the course example's 8.15.0 doesn't work). Stay on 8.x.
     image: docker.elastic.co/elasticsearch/elasticsearch:8.18.0
     environment:
       discovery.type: single-node
@@ -117,34 +125,20 @@ services:
       retries: 12
       start_period: 20s
 
-  operate:
-    image: camunda/operate:8.8.0
-    ports:
-      - "127.0.0.1:8088:8080"
-    depends_on:
-      zeebe:
-        condition: service_started
-      elasticsearch:
-        condition: service_healthy
-    environment:
-      CAMUNDA_OPERATE_ZEEBE_GATEWAYADDRESS: zeebe:26500
-      CAMUNDA_OPERATE_ELASTICSEARCH_URL: http://elasticsearch:9200
-      CAMUNDA_DATA_SECONDARY_STORAGE_ELASTICSEARCH_URL: http://elasticsearch:9200
-
   # ---------------- integration ----------------
   bridge:
     build: ./bridge
     depends_on:
       topics:
         condition: service_completed_successfully
-      zeebe:
+      camunda:
         condition: service_started
     env_file:
       - path: ./bridge/.env          # DCR credentials; optional
         required: false
     environment:
       PANDAPROXY_URL: http://redpanda:8082
-      ZEEBE_ADDRESS: zeebe:26500
+      ZEEBE_ADDRESS: camunda:26500
       LOGGING_URL: http://logging-service:5010/log
       MAPPING_FILE: /config/mapping.json
       BPMN_DIR: /bpmn
