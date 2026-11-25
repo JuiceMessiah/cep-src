@@ -40,13 +40,14 @@ First build downloads Maven plugins + dependencies into `.m2repo/` (gitignored, 
 ## Run
 
 ```bash
-docker cp target/cep-job-1.0.jar flink-jobmanager:/tmp/cep-job.jar
-docker exec flink-jobmanager /opt/flink/bin/flink run -d /tmp/cep-job.jar --source replay --group cep-job-r1
+# stream it in (not docker cp): cp keeps the host owner/mode (568, 660) and Flink's own user can't read it
+docker exec -i flink-jobmanager sh -c 'cat > /tmp/cep-job-v1.jar' < target/cep-job-1.0.jar
+docker exec flink-jobmanager /opt/flink/bin/flink run -d /tmp/cep-job-v1.jar --source replay --group cep-job-r1
 docker exec flink-jobmanager /opt/flink/bin/flink list
 docker logs -f flink-taskmanager 2>&1 | grep 'CEP '          # every emitted alert is logged
 ```
 
-Start the job **before** the replay (FIRMS is read from `latest`). Cancel with `flink cancel <job id>`. A new `--group` = a fresh start.
+The `WARNING: Unknown module: jdk.compiler` lines from the Flink CLI are harmless. If `cat >` says `Permission denied`, a file with that name exists and belongs to another uid (an earlier `docker cp`; `/tmp` is sticky, so `flink` can't replace it): use a new name (`-v2.jar`). Recreating the jobmanager container clears `/tmp`. Start the job **before** the replay (FIRMS is read from `latest`). Cancel with `flink cancel <job id>`. A new `--group` = a fresh start.
 
 | Argument | Default | Meaning |
 |---|---|---|
