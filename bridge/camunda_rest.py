@@ -6,6 +6,9 @@ Used for what the gRPC client (pyzeebe 3.0.4) can't do or can't do reliably:
                                  (works for message START events too; NOT buffered)
   POST /v2/messages/publication  publish a message with an explicit timeToLive (buffered)
   POST /v2/deployments           deploy *.bpmn + *.dmn + *.form atomically (multipart)
+  POST /v2/element-instances/search   completed activities of a process instance (XES source)
+  GET  /v2/process-instances/{key}    instance state (stop polling finished instances)
+  The last two are eventually consistent: they read what the Camunda Exporter has exported.
 
 Auth: none. Both compose files set CAMUNDA_SECURITY_AUTHENTICATION_UNPROTECTEDAPI=true and
 the API is only reachable on the internal Docker network.
@@ -32,6 +35,12 @@ class CamundaRest:
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
         req = urllib.request.Request(f"{self.base}/v2{path}", data=data, method="POST",
                                      headers={"Content-Type": content_type, "Accept": "application/json"})
+        return self._send(req)
+
+    def _get(self, path):
+        return self._send(urllib.request.Request(f"{self.base}/v2{path}", headers={"Accept": "application/json"}))
+
+    def _send(self, req):
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 raw = r.read()
@@ -74,3 +83,24 @@ class CamundaRest:
                 + content + b"\r\n")
         body = b"".join(parts) + f"--{boundary}--\r\n".encode()
         return self._post("/deployments", body, f"multipart/form-data; boundary={boundary}")
+
+    def element_instances(self, process_instance_key, limit=1000):
+        """All element instances of one process instance (any state). One page is plenty for our
+        processes; a warning field is set if Camunda reports more."""
+        resp = self._post("/element-instances/search", {
+            "filter": {"processInstanceKey": str(process_instance_key)},
+            "page": {"limit": limit}})
+        items = resp.get("items", [])
+        total = (resp.get("page") or {}).get("totalItems")
+        if isinstance(total, int) and total > len(items):
+            raise CamundaError(0, f"{total} element instances, only {len(items)} fetched (raise limit)")
+        return items
+
+    def instance_state(self, process_instance_key):
+        """ACTIVE / COMPLETED / TERMINATED (or None if Camunda doesn't know it yet)."""
+        try:
+            return self._get(f"/process-instances/{process_instance_key}").get("state")
+        except CamundaError as e:
+            if e.status == 404:          # not exported yet
+                return None
+            raise

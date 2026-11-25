@@ -57,7 +57,20 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"deploymentKey": "9", "deployments": [
                 {"processDefinition": {"processDefinitionId": "cep_smoke_test"}},
                 {"decisionDefinition": {"decisionDefinitionId": "smoke_priority"}}]})
+        if self.path == "/v2/element-instances/search":
+            b = json.loads(raw)
+            k = b["filter"]["processInstanceKey"]
+            n = 3 if k == "big" else 2
+            return self._send(200, {"items": [{"elementInstanceKey": str(i), "elementId": "T", "state": "COMPLETED",
+                                               "endDate": "2026-11-25T21:00:00.000Z"} for i in range(2)],
+                                    "page": {"totalItems": n}})
         self._send(404, {"title": "nope"})
+
+    def do_GET(self):
+        seen.append((self.path, None, b""))
+        if self.path == "/v2/process-instances/123":
+            return self._send(200, {"processInstanceKey": "123", "state": "COMPLETED"})
+        self._send(404, {"title": "NOT_FOUND", "detail": "not exported yet"})
 
 
 srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
@@ -105,6 +118,18 @@ try:
     raise SystemExit("expected CamundaError")
 except CamundaError as e:
     assert e.status == 0 and "cannot reach" in str(e)
+# element instances + instance state (Camunda log)
+items = rest.element_instances(2251799813691096)
+body = json.loads(seen[-1][2])
+assert seen[-1][0] == "/v2/element-instances/search" and body["filter"] == {"processInstanceKey": "2251799813691096"}
+assert len(items) == 2 and items[0]["state"] == "COMPLETED"
+try:
+    rest.element_instances("big")
+    raise SystemExit("expected CamundaError for a truncated page")
+except CamundaError as e:
+    assert "raise limit" in str(e)
+assert rest.instance_state(123) == "COMPLETED"
+assert rest.instance_state(999) is None                       # 404 = not exported yet, not an error
 print("1. camunda_rest: ok")
 
 # ---------- correlation-key templates through the bridge ----------

@@ -100,5 +100,8 @@
   "dcr_watch": {
     "poll_s": 5,
     "events": []
+  },
+  "camunda_log": {
+    "poll_s": 5
   }
 }

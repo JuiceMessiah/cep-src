@@ -90,7 +90,18 @@ Same fields as the course example's callback, plus `case_key`, `engine`, `proces
 }
 ```
 
-Events the bridge produces on its own: `ProcessStarted` (Camunda), `CaseCreated` (DCR), `<action>Failed`. A DCR event that the graph doesn't allow comes back with `payload.rejected = true` and an `error`: a compliance signal, not a crash.
+Events the bridge produces on its own: `ProcessStarted` (Camunda), `CaseCreated` (DCR), `<action>Failed`. A DCR event that the graph doesn't allow comes back with `payload.rejected = true` and an `error`: a compliance signal, not a crash. **DCR events are named by their label** (as the graph shows it, e.g. "Emergency order"); the id is in `payload.event_id`.
+
+**Alerts are processed once:** the bridge remembers `alert_id`s (persisted in `bridge-state/alerts_seen.json`), so the same finding from two Flink jobs or a restarted job only acts once.
+
+### 3.3b The XES log
+
+| Process | Source of the XES entries |
+|---|---|
+| BPMN (Camunda) | **Camunda itself** (`camunda_log` in `mapping.json`): every completed task and named catch/start/boundary event, with Camunda's **end time** as `time:timestamp` and the element's **lane** as `org:resource`. Names come from the model file. User tasks, DMN tasks and buffered messages are only visible this way, and the order is the real one. The bridge writes no Zeebe entries of its own while this is on. |
+| DCR | the bridge: events it executes + events people execute in the portal (DCR watch), named by label. CEP triggers that aren't graph activities are kept out with `log_activity: ""`. |
+
+Both are written by the logging service to `XES/<run>_<process>.xes`. The Camunda log reads exported data, so entries appear a few seconds after the fact. Instances that existed before the Camunda log was first switched on are not logged retroactively (clean slate before a demo run anyway).
 
 ### 3.4 Time: two clocks, on purpose
 
@@ -150,7 +161,7 @@ Variables in every instance started or touched by the CEP: `caseKey`, `alertType
 | Item | Value |
 |---|---|
 | Graph ID | *from the DCR modeller* |
-| Event **IDs** (not labels) | the IDs behind **Declare Emergency Procurement**, **Emergency order**, **Receive emergency delivery** (these three are what the CEP touches/watches) |
+| Event **id** for the bridge, **labels** for everything else | the bridge *executes* by id (`mapping.json`: the id behind **Declare Emergency Procurement**; `tools/dcr_probe.py` prints it); pais.events, XES and the Flink job use the **labels** **Emergency order** and **Receive emergency delivery** (so recreating the graph doesn't break the CEP) |
 | Case per incident | `BurnSupplyEmergency` creates one case per incident key and executes *Declare Emergency Procurement* |
 | What comes back | the bridge reports events it executes itself, **and polls open cases** for events people execute in the DCR portal (needed for `CapacityRedirect`) |
 | Account | API credentials in `bridge.env` on the server / demo laptop, **never in git** |
@@ -185,7 +196,8 @@ The only file that connects alert types to models. No Python changes needed for 
     "check-unit-availability": { "activity": "Check unit availability", "emit": false,
                                  "set": { "unitsAvailable": 1 } }
   },
-  "dcr_watch": { "poll_s": 5, "events": [] }
+  "dcr_watch": { "poll_s": 5, "events": [] },
+  "camunda_log": { "poll_s": 5 }
 }
 ```
 
@@ -202,7 +214,8 @@ The `SmokeTest`/`SmokeTestUpdate` entries (smoke-test process) stay for plumbing
 | `variables` | process variables fetched by that worker and reported in the PAIS event payload, on top of `caseKey`, `alertType`, `alertId`, `severity`, `cepEventTime` |
 | `emit` | `false` = only log, don't send to Flink |
 | `set` | variables set on the process when the job completes |
-| `dcr_watch` | poll open DCR cases every `poll_s` and report events newly executed by people in the portal (`role: dcr-user`, `payload.source: dcr-portal`); `events` = only these ids, `[]` = all. Sees an executed **flag**: a second execution of the same event is invisible |
+| `camunda_log` | write the XES log for BPMN processes from Camunda's completed element instances every `poll_s` (§3.3b); optional `tags` = BPMN element types to log (default: all task types + start/boundary/intermediate events) |
+| `dcr_watch` | poll open DCR cases every `poll_s` and report events newly executed by people in the portal (`role: dcr-user`, `payload.source: dcr-portal`); `events` = only these ids or labels, `[]` = all. Sees an executed **flag**: a second execution of the same event is invisible |
 
 ## 7. Conventions
 

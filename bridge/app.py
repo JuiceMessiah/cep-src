@@ -30,6 +30,7 @@ import sys
 import urllib.error
 import urllib.request
 
+import bpmn_meta
 from camunda_rest import CamundaRest
 from core import Bridge, load_mapping
 from pandaproxy import Consumer, ProxyError, produce, wait_for_proxy
@@ -135,6 +136,19 @@ async def setup_zeebe(bridge):
                 log(f"deploy: Camunda not ready yet (attempt {attempt}/90: {e})")
             await asyncio.sleep(2)
     return ZeebeAdapter(client, rest), worker
+
+
+async def camunda_log_loop(bridge):
+    period = float(bridge.mapping.get("camunda_log", {}).get("poll_s", 5))
+    log(f"Camunda log: XES for BPMN processes from completed element instances, every {period:g}s")
+    while True:
+        try:
+            n = await bridge.camunda_log_once()
+            if n:
+                log(f"Camunda log: {n} activit{'y' if n == 1 else 'ies'} logged")
+        except Exception as e:  # keep going; the log just lags
+            log(f"Camunda log error: {type(e).__name__}: {e}")
+        await asyncio.sleep(period)
 
 
 async def dcr_watch_loop(bridge):
@@ -252,9 +266,13 @@ async def main():
     offsets = OffsetStore(os.path.join(os.path.dirname(state), "offsets.json") if state else None)
     tasks = [consume_alerts(bridge, consumer, offsets)]
     if ZEEBE_ENABLED:
+        bridge.element_meta = bpmn_meta.load(BPMN_DIR)
         zeebe, worker = await setup_zeebe(bridge)
         bridge.zeebe = zeebe
+        bridge.camunda = zeebe.rest
         tasks.append(worker.work())
+        if mapping.get("camunda_log"):
+            tasks.append(camunda_log_loop(bridge))
     else:
         log("Zeebe disabled")
     if dcr is not None and mapping.get("dcr_watch"):
