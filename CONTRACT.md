@@ -100,7 +100,7 @@ Events the bridge produces on its own: `ProcessStarted` (Camunda), `CaseCreated`
 
 ## 4. CEP patterns
 
-Parameters in *italics* are Flink job arguments; the values are the defaults (`flink-job/README.md`). DCR event ids are job arguments too, since the graph doesn't exist yet.
+Parameters in *italics* are Flink job arguments; the values are the defaults (`flink-job/README.md`). The DCR event names are job arguments too: **labels** ("Emergency order", "Receive emergency delivery"), not ids. Only one running job may have `--process-patterns` on (the default); a second one (e.g. live next to a replay) runs with `--process-patterns false`.
 
 | Alert type | Pattern | Inputs | Triggers |
 |---|---|---|---|

@@ -125,7 +125,7 @@ public final class TestCore {
         s.onPais(k, "Send EMS pre-alert", Map.of("unitId", "amb-2"), "", T0, 0, p);
         s.onPais(k, "Send EMS pre-alert", Map.of("unitId", "amb-3"), "", T0, 0, p);
         s.onPais(k, "Report unit available", Map.of("unitId", "amb-3"), "", T0, 0, p);   // back at base
-        s.onPais(k, "EmergencyOrder", Map.of(), "", T0, 10 * MIN, p);
+        s.onPais(k, "Emergency order", Map.of(), "", T0, 10 * MIN, p);
         check("timer set", s.nextTimer() == 12 * MIN, s.nextTimer());
         check("not yet", s.onTimer(k, 11 * MIN, p).isEmpty() && s.nextTimer() == 12 * MIN, "");
         List<Alert> out = s.onTimer(k, 12 * MIN, p);
@@ -134,20 +134,20 @@ public final class TestCore {
         check("ids per unit", out.get(0).alertId().equals("CapacityRedirect:" + k + ":amb-1"), out.get(0).alertId());
         check("timer cleared", s.nextTimer() == -1, "");
         // second order, same units: no duplicate redirects
-        s.onPais(k, "EmergencyOrder", Map.of(), "", T0, 20 * MIN, p);
+        s.onPais(k, "Emergency order", Map.of(), "", T0, 20 * MIN, p);
         check("no duplicates", s.onTimer(k, 22 * MIN, p).isEmpty(), "");
         // delivery in time cancels
         var d = new ProcessPatternLogic();
         d.onAlert("FireAlert", "c2_2", Map.of("danger_class", 3), T0);
         d.onPais(k, "Send EMS pre-alert", Map.of("unitId", "amb-9"), "", T0, 0, p);
-        d.onPais(k, "EmergencyOrder", Map.of(), "", T0, 0, p);
-        d.onPais(k, "ReceiveEmergencyDelivery", Map.of(), "", T0, 1 * MIN, p);
+        d.onPais(k, "Emergency order", Map.of(), "", T0, 0, p);
+        d.onPais(k, "Receive emergency delivery", Map.of(), "", T0, 1 * MIN, p);
         check("delivered in time", d.nextTimer() == -1 && d.onTimer(k, 5 * MIN, p).isEmpty(), "");
         // incident over: no redirect
         var e = new ProcessPatternLogic();
         e.onAlert("FireAlert", "c2_2", Map.of("danger_class", 3), T0);
         e.onPais(k, "Send EMS pre-alert", Map.of("unitId", "amb-9"), "", T0, 0, p);
-        e.onPais(k, "EmergencyOrder", Map.of(), "", T0, 0, p);
+        e.onPais(k, "Emergency order", Map.of(), "", T0, 0, p);
         e.onAlert("SceneCleared", "c2_2", Map.of(), T0 + 20 * H);
         check("cleared incident", e.onTimer(k, 5 * MIN, p).isEmpty(), "");
     }
