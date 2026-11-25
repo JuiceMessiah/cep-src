@@ -1,10 +1,11 @@
 {
-  "_comment": "What the bridge does per CEP alert type, and which BPMN service tasks report back to the CEP. Modellers: replace the smoke-test entries with your real IDs (see CONTRACT.md). Activity names should match the task/event names in your models, because they become the XES activities used for conformance checking. Set \"log_activity\": \"\" on an action to keep the CEP trigger out of that engine's XES trace.",
+  "_comment": "What the bridge does per CEP alert type, and which BPMN jobs report back to the CEP. See CONTRACT.md sections 5 and 6. The SmokeTest entries drive bpmn/cep-smoke-test.bpmn (plumbing test only); the real models get their own entries next to them. Activity names must match the element names in the models: they become the XES activities used for conformance checking.",
   "on_alert": {
     "SmokeTest": [
       {
         "engine": "zeebe",
-        "action": "start_process",
+        "action": "correlate_message",
+        "message": "SmokeStart",
         "process_id": "cep_smoke_test",
         "log_activity": "Fire risk detected"
       },
@@ -20,6 +21,7 @@
         "engine": "zeebe",
         "action": "publish_message",
         "message": "FireUpdate",
+        "ttl_s": 60,
         "process_id": "cep_smoke_test",
         "log_activity": "Fire update received"
       },
@@ -32,16 +34,22 @@
     ]
   },
   "zeebe_tasks": {
-    "notify-cep": {
-      "activity": "Acknowledge incident",
+    "cep-event": {
+      "activity_from_header": "activity",
+      "variables": ["unitId"],
       "emit": true
     },
     "close-incident": {
       "activity": "Close incident",
+      "variables": ["priority"],
       "emit": true,
       "set": {
         "closedBy": "bridge"
       }
     }
+  },
+  "dcr_watch": {
+    "poll_s": 5,
+    "events": []
   }
 }

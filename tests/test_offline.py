@@ -116,6 +116,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
 class Dcr:
     sims = []
     enabled = {}      # sim -> set(events)
+    executed = {}     # sim -> set(events)
     auth_seen = set()
 
 
@@ -137,6 +138,7 @@ class DcrHandler(BaseHTTPRequestHandler):
             sid = str(1000 + len(Dcr.sims))
             Dcr.sims.append(sid)
             Dcr.enabled[sid] = {"ReportFire"}
+            Dcr.executed[sid] = set()
             return self._send(201)
         m = re.fullmatch(r"/api/graphs/42/sims/(\d+)/events/(\w+)", self.path)
         if m:
@@ -144,6 +146,7 @@ class DcrHandler(BaseHTTPRequestHandler):
             if ev not in Dcr.enabled.get(sid, set()):
                 return self._send(400, "<error>event not enabled</error>")
             Dcr.enabled[sid] = {"Escalate", "CloseCase"} if ev == "ReportFire" else {"CloseCase"}
+            Dcr.executed[sid].add(ev)
             return self._send(204)
         self._send(404)
 
@@ -152,13 +155,17 @@ class DcrHandler(BaseHTTPRequestHandler):
             return self._send(200, "<log>" + "".join(f'<trace id="{s}"/>' for s in Dcr.sims) + "</log>")
         m = re.fullmatch(r"/api/graphs/42/sims/(\d+)/events", self.path)
         if m:
-            evs = "".join(f'<event id="{e}" enabled="true"/>' for e in sorted(Dcr.enabled.get(m.group(1), [])))
-            return self._send(200, f"<events>{evs}<event id=\"Never\" enabled=\"false\"/></events>")
+            sid = m.group(1)
+            ids = sorted(Dcr.enabled.get(sid, set()) | Dcr.executed.get(sid, set()) | {"Never"})
+            evs = "".join(f'<event id="{e}" label="{e} label" enabled="{str(e in Dcr.enabled.get(sid, set())).lower()}" '
+                          f'executed="{str(e in Dcr.executed.get(sid, set())).lower()}"/>' for e in ids)
+            return self._send(200, f"<events>{evs}</events>")
         self._send(404)
 
 
 # ---------------- fake Zeebe ----------------
 class FakeZeebe:
+    """start_process = gRPC; correlate_message / publish_message = REST in the real adapter."""
     def __init__(self):
         self.started, self.messages, self.n = [], [], 2251799813685248
 
@@ -167,8 +174,14 @@ class FakeZeebe:
         self.started.append((pid, variables, self.n))
         return self.n
 
-    async def publish_message(self, name, key, variables):
-        self.messages.append((name, key, variables))
+    async def correlate_message(self, name, key, variables):
+        assert name == "SmokeStart"          # message start event of cep_smoke_test
+        self.n += 1
+        self.started.append(("cep_smoke_test", variables, self.n))
+        return str(self.n)
+
+    async def publish_message(self, name, key, variables, ttl_ms=None):
+        self.messages.append((name, key, variables, ttl_ms))
 
 
 def serve(handler):
@@ -227,10 +240,22 @@ def main():
         await asyncio.sleep(1.5)
         # Zeebe jobs as pyzeebe would deliver them (task type, variables, instance key, process id)
         for pid, variables, key in zb.started:
-            out = bridge.on_zeebe_job("notify-cep", dict(variables), key, pid)
+            out = bridge.on_zeebe_job("cep-event", dict(variables), key, pid,
+                                      headers={"activity": "Acknowledge incident"}, element_id="Task_Acknowledge")
             assert out == {}
-        out = bridge.on_zeebe_job("close-incident", dict(zb.started[0][1]), zb.started[0][2], "cep_smoke_test")
+        # cep-event without the header: job still completes, envelope carries an error
+        bridge.on_zeebe_job("cep-event", dict(zb.started[1][1]), zb.started[1][2], "cep_smoke_test",
+                            headers={}, element_id="Task_NoHeader")
+        out = bridge.on_zeebe_job("close-incident", dict(zb.started[0][1]) | {"priority": "P1"},
+                                  zb.started[0][2], "cep_smoke_test")
         assert out == {"closedBy": "bridge"}
+        # DCR watch: first look at each case sets the baseline (nothing reported)...
+        assert await bridge.dcr_watch_once() == 0
+        # ...then a person executes CloseCase in the portal on c3_4's case
+        c34 = bridge.cases[("dcr", "dcr:42", "c3_4")]
+        Dcr.executed[c34].add("CloseCase")
+        assert await bridge.dcr_watch_once() == 1
+        assert await bridge.dcr_watch_once() == 0        # reported once, not on every poll
         # second update for c5_1 -> DCR Escalate allowed; then Escalate again on c3_4 -> rejected by DCR
         put_alert("SmokeTestUpdate", "c3_4", T0 + 7_200_000)
         await asyncio.sleep(1.5)
@@ -243,7 +268,7 @@ def main():
     assert [s[0] for s in zb.started] == ["cep_smoke_test", "cep_smoke_test"], zb.started
     v = zb.started[0][1]
     assert v["caseKey"] == "c3_4" and v["cepEventTime"] == T0 and v["alertType"] == "SmokeTest"
-    assert [(m[0], m[1]) for m in zb.messages] == [("FireUpdate", "c3_4"), ("FireUpdate", "c3_4")]
+    assert [(m[0], m[1], m[3]) for m in zb.messages] == [("FireUpdate", "c3_4", 60000)] * 2
     assert len(Dcr.sims) == 2 and Dcr.auth_seen and None not in Dcr.auth_seen
 
     pais = [v for _, v in P.topics["pais.events"]]
@@ -254,6 +279,15 @@ def main():
     assert ("dcr", "ReportFire", "c3_4") in names
     assert ("camunda", "Acknowledge incident", "c5_1") in names
     assert ("camunda", "Close incident", "c3_4") in names
+    assert ("camunda", "Task_NoHeader", "c5_1") in names
+    noh = [e for e in pais if e["event"] == "Task_NoHeader"][0]
+    assert "activity" in noh["error"], noh
+    close = [e for e in pais if e["event"] == "Close incident"][0]
+    assert close["payload"]["priority"] == "P1"
+    portal = [e for e in pais if e["payload"].get("source") == "dcr-portal"]
+    assert [(e["event"], e["case_key"], e["role"]) for e in portal] == [("CloseCase", "c3_4", "dcr-user")], portal
+    assert portal[0]["event_time"] == T0 + 3_600_000          # event time of the alert that last touched the case (first update)
+    assert portal[0]["payload"]["label"] == "CloseCase label"
     esc = [e for e in pais if e["event"] == "Escalate"]
     assert len(esc) == 2 and esc[0]["error"] == "" and "CloseCase" in esc[0]["payload"]["enabledEvents"]
     assert esc[1]["error"] and esc[1]["payload"]["rejected"] is True        # Escalate not enabled twice
@@ -286,6 +320,7 @@ def main():
              for t in ET.parse(dcr_xes).getroot().findall("trace") for e in t.findall("event")]
     print("DCR traces:", dacts)
     assert "Fire risk detected" not in dacts and dacts.count("ReportFire") == 2 and dacts.count("Escalate") == 2
+    assert dacts.count("CloseCase") == 1
     print("\nALL OFFLINE TESTS PASSED")
     proxy_srv.shutdown(); dcr_srv.shutdown(); ls.shutdown()
 

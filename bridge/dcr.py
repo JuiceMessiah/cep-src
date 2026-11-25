@@ -11,6 +11,10 @@ Difference to the example: create_case() is serialised with a lock. The API
 doesn't return the new sim id, so the example takes the LAST id from the list;
 two alerts at the same moment would otherwise both get the same case.
 Credentials come from the environment and never appear in errors or logs.
+
+events() returns every <event> tag's attributes as a dict. The course example only relies
+on `enabled`; the bridge's DCR watcher additionally needs `executed` to notice events people
+execute in the portal. tools/dcr_probe.py prints which attribute NAMES the API really returns.
 """
 import base64
 import re
@@ -62,16 +66,41 @@ class DcrClient:
                 raise DcrError("create sim: no sim ids in response")
             return ids[-1]
 
-    def enabled_events(self, case_id):
+    def events(self, case_id):
+        """[{attr: value, ...}] for every event in the case's current marking (attribute
+        names lower-cased; values are strings as the API sends them)."""
         status, xml = self._call("GET", f"/sims/{case_id}/events")
         if status not in (200, 201):
-            raise DcrError(f"enabled events: HTTP {status}")
-        xml = xml.replace('\\"', '"')
-        return re.findall(r'<event[^>]*id="([^"]+)"[^>]*enabled="true"[^>]*>', xml, flags=re.IGNORECASE)
+            raise DcrError(f"events: HTTP {status}")
+        return parse_events(xml)
+
+    def enabled_events(self, case_id):
+        return enabled(self.events(case_id))
 
     def execute(self, case_id, event_id):
+        """Execute, then return the case's events (same format as events())."""
         status, _ = self._call("POST", f"/sims/{case_id}/events/{event_id}")
         if status not in (200, 201, 204):
             # typical cause: event not enabled in the current marking (a DCR constraint said no)
             raise DcrError(f"execute {event_id}: HTTP {status} (not enabled?)")
-        return self.enabled_events(case_id)
+        return self.events(case_id)
+
+
+_TAG = re.compile(r"<event\b([^>]*)>", re.IGNORECASE)
+_ATTR = re.compile(r'([\w:-]+)\s*=\s*"([^"]*)"')
+
+
+def parse_events(xml):
+    xml = xml.replace('\\"', '"')   # the API sometimes returns XML inside a JSON string
+    return [{k.lower(): v for k, v in _ATTR.findall(m.group(1))} for m in _TAG.finditer(xml)]
+
+
+def enabled(events):
+    return [e["id"] for e in events if "id" in e and e.get("enabled", "").lower() == "true"]
+
+
+def executed(events):
+    """Set of executed event ids, or None if the API doesn't report an executed flag."""
+    if not events or not any("executed" in e for e in events):
+        return None
+    return {e["id"] for e in events if "id" in e and e.get("executed", "").lower() == "true"}

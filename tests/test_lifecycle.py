@@ -34,7 +34,11 @@ class Z:
         self.n += 1
         return self.n
 
-    async def publish_message(self, *a):
+    async def correlate_message(self, name, key, v):   # SmokeTest = message start via REST
+        self.n += 1
+        return str(self.n)
+
+    async def publish_message(self, *a, **kw):
         pass
 
 

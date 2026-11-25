@@ -15,8 +15,9 @@ Environment (see .env.template):
   ALERTS_TOPIC     alerts            PAIS_TOPIC   pais.events
   CONSUMER_GROUP   cep-bridge        (prefix: each start uses a fresh group cep-bridge-<random>)
   MAPPING_FILE     /config/mapping.json
-  ZEEBE_ENABLED    true              ZEEBE_ADDRESS zeebe:26500
-  BPMN_DIR         /bpmn             (every *.bpmn there is deployed at start)
+  ZEEBE_ENABLED    true              ZEEBE_ADDRESS camunda:26500 (gRPC: workers, start_process)
+  CAMUNDA_REST_URL http://camunda:8080  (REST: messages, deployments)
+  BPMN_DIR         /bpmn             (every *.bpmn, *.dmn, *.form there is deployed at start, atomically)
   DCR_ENABLED      false             DCR_GRAPH_ID / DCR_USERNAME / DCR_PASSWORD
   LOGGING_URL      http://logging-service:5010/log   (empty = off)
 """
@@ -29,6 +30,7 @@ import sys
 import urllib.error
 import urllib.request
 
+from camunda_rest import CamundaRest
 from core import Bridge, load_mapping
 from pandaproxy import Consumer, ProxyError, produce, wait_for_proxy
 
@@ -39,6 +41,7 @@ GROUP = os.getenv("CONSUMER_GROUP", "cep-bridge")
 MAPPING_FILE = os.getenv("MAPPING_FILE", "/config/mapping.json")
 ZEEBE_ENABLED = os.getenv("ZEEBE_ENABLED", "true").lower() == "true"
 ZEEBE_ADDRESS = os.getenv("ZEEBE_ADDRESS", "zeebe:26500")
+CAMUNDA_REST_URL = os.getenv("CAMUNDA_REST_URL", "http://camunda:8080")
 BPMN_DIR = os.getenv("BPMN_DIR", "/bpmn")
 DCR_ENABLED = os.getenv("DCR_ENABLED", "false").lower() == "true"
 LOGGING_URL = os.getenv("LOGGING_URL", "http://logging-service:5010/log")
@@ -68,17 +71,22 @@ def post_log(env):
 
 
 class ZeebeAdapter:
-    """Thin wrapper so core.py never imports pyzeebe."""
+    """Thin wrapper so core.py never imports pyzeebe. Process start over gRPC (pyzeebe),
+    messages over REST (explicit TTL, and correlation that returns the instance key)."""
 
-    def __init__(self, client):
+    def __init__(self, client, rest):
         self.client = client
+        self.rest = rest
 
     async def start_process(self, process_id, variables):
         resp = await self.client.run_process(process_id, variables=variables)
         return getattr(resp, "process_instance_key", resp)   # pyzeebe versions differ
 
-    async def publish_message(self, name, correlation_key, variables):
-        await self.client.publish_message(name, str(correlation_key), variables)
+    async def publish_message(self, name, correlation_key, variables, ttl_ms=60_000):
+        return await asyncio.to_thread(self.rest.publish, name, correlation_key, variables, ttl_ms)
+
+    async def correlate_message(self, name, correlation_key, variables):
+        return await asyncio.to_thread(self.rest.correlate, name, correlation_key, variables)
 
 
 async def setup_zeebe(bridge):
@@ -93,30 +101,53 @@ async def setup_zeebe(bridge):
         def make(tt):
             async def handler(job: Job, **variables):
                 merged = {**(job.variables or {}), **variables}
-                return bridge.on_zeebe_job(tt, merged, job.process_instance_key, job.bpmn_process_id)
+                return bridge.on_zeebe_job(tt, merged, job.process_instance_key, job.bpmn_process_id,
+                                           headers=dict(getattr(job, "custom_headers", None) or {}),
+                                           element_id=getattr(job, "element_id", None))
             return handler
+        # Explicit fetch list: BASE_VARS + the mapping's "variables" (e.g. unitId), nothing else.
         worker.task(task_type=task_type,
                     variables_to_fetch=BASE_VARS + list(cfg.get("variables", [])))(make(task_type))
         log(f"zeebe worker registered for task type {task_type!r}")
 
-    files = sorted(glob.glob(os.path.join(BPMN_DIR, "*.bpmn")))
+    rest = CamundaRest(CAMUNDA_REST_URL)
+    files = sorted(f for ext in ("bpmn", "dmn", "form") for f in glob.glob(os.path.join(BPMN_DIR, f"*.{ext}")))
+    names = ", ".join(os.path.basename(f) for f in files)
     if not files:
-        log(f"no *.bpmn in {BPMN_DIR}: nothing deployed (processes must be deployed some other way)")
-    for path in files:
-        # The 8.8 orchestration cluster (Zeebe + Operate + Tasklist + exporter) needs 1-2 min to accept
-        # deployments after a cold start: retry for up to ~3 min, logging every 10th attempt.
-        for attempt in range(1, 91):
-            try:
-                await client.deploy_process(path)
-                log(f"deployed {os.path.basename(path)}")
+        log(f"no *.bpmn/*.dmn/*.form in {BPMN_DIR}: nothing deployed")
+    # The 8.8 orchestration cluster needs 1-2 min to accept deployments after a cold start:
+    # retry for up to ~3 min, logging every 10th attempt. One atomic deployment for all files,
+    # so a BPMN and the DMN it calls never end up half-deployed.
+    for attempt in range(1, 91 if files else 1):
+        try:
+            resp = await asyncio.to_thread(rest.deploy, files)
+            kinds = [k for d in resp.get("deployments", []) for k in d]
+            log(f"deployed {names} ({', '.join(sorted(set(kinds))) or 'ok'})")
+            break
+        except Exception as e:
+            if getattr(e, "status", 0) == 400:   # a broken model won't fix itself by retrying
+                log(f"DEPLOYMENT REJECTED, nothing from {names} deployed; previously deployed "
+                    f"versions keep running. Camunda says: {e}")
                 break
-            except Exception as e:
-                if attempt == 90:
-                    raise
-                if attempt == 1 or attempt % 10 == 0:
-                    log(f"deploy {os.path.basename(path)}: Camunda not ready yet (attempt {attempt}/90: {e!r})")
-                await asyncio.sleep(2)
-    return ZeebeAdapter(client), worker
+            if attempt == 90:
+                raise
+            if attempt == 1 or attempt % 10 == 0:
+                log(f"deploy: Camunda not ready yet (attempt {attempt}/90: {e})")
+            await asyncio.sleep(2)
+    return ZeebeAdapter(client, rest), worker
+
+
+async def dcr_watch_loop(bridge):
+    period = float(bridge.mapping.get("dcr_watch", {}).get("poll_s", 5))
+    log(f"DCR watch: polling open cases every {period:g}s")
+    while True:
+        try:
+            n = await bridge.dcr_watch_once()
+            if n:
+                log(f"DCR watch: {n} event(s) executed in the portal reported")
+        except Exception as e:  # keep watching; one bad poll shouldn't kill the bridge
+            log(f"DCR watch error: {type(e).__name__}: {e}")
+        await asyncio.sleep(period)
 
 
 class OffsetStore:
@@ -226,6 +257,8 @@ async def main():
         tasks.append(worker.work())
     else:
         log("Zeebe disabled")
+    if dcr is not None and mapping.get("dcr_watch"):
+        tasks.append(dcr_watch_loop(bridge))
     skipped = bridge.skipped_actions()
     if skipped:
         log("engine disabled, these mapping actions are SKIPPED: "

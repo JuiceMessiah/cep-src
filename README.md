@@ -18,7 +18,8 @@ Backend for the 02268 group project: external event sources (NASA FIRMS, OpenWea
 | `logging_service/` | XES log per process (based on the course example) | laptop |
 | `bpmn/` | BPMN files; every `*.bpmn` here is deployed by the bridge at start | |
 | `tools/send_alert.py` | send one alert by hand: test the process side without a Flink job | laptop |
-| `tests/` | `test_offline.py` (end-to-end, fake Redpanda/DCR/Zeebe), `test_lifecycle.py`, `test_fwi.py` | anywhere with Python + Flask |
+| `tools/dcr_probe.py` | shows which attributes the DCR API returns for a case's events (needed by the DCR watch) | anywhere with the DCR account |
+| `tests/` | `test_offline.py` (end-to-end, fake Redpanda/DCR/Zeebe), `test_lifecycle.py`, `test_rest.py` (Camunda REST client), `test_fwi.py` | anywhere with Python + Flask |
 | `compose.demo.yaml` | **everything on one laptop** (dev + screencast) | laptop |
 | `compose.yaml` | **server** stack: everything in `compose.demo.yaml` plus the live poller, hardened (internal network, digests, 568) | NAS (Arcane), see `runbook-cep-lab.md` |
 
@@ -35,7 +36,7 @@ docker compose -f compose.demo.yaml logs -f bridge  # wait for "deployed cep-smo
 Test the CEP → Camunda → CEP path without any Flink job:
 
 ```bash
-python3 tools/send_alert.py SmokeTest c3_4          # starts cep_smoke_test, worker reports "Acknowledge incident"
+python3 tools/send_alert.py SmokeTest c3_4          # message start of cep_smoke_test, "Acknowledge incident", DMN sets priority
 python3 tools/send_alert.py SmokeTestUpdate c3_4    # message FireUpdate → "Close incident" → done
 ```
 
@@ -60,6 +61,7 @@ UIs: Flink http://localhost:8081 · Operate http://localhost:8088/operate · Tas
 ```bash
 python3 tests/test_offline.py      # needs Python 3.10+ and Flask
 python3 tests/test_lifecycle.py
+python3 tests/test_rest.py
 python3 tests/test_fwi.py          # stdlib only
 ```
 

@@ -209,6 +209,7 @@ services:
     environment:
       PANDAPROXY_URL: http://redpanda:8082
       ZEEBE_ADDRESS: camunda:26500
+      CAMUNDA_REST_URL: http://camunda:8080
       LOGGING_URL: http://logging-service:5010/log
       MAPPING_FILE: /config/mapping.json
       BPMN_DIR: /bpmn

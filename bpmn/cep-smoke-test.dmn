@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Smoke-test decision for the business rule task "Classify priority" in cep-smoke-test.bpmn.
+     Template for the real business rule tasks: decision id = calledDecision decisionId in the BPMN,
+     inputs are process variables (here: severity, set by the bridge from the alert). -->
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+             xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+             id="Definitions_smoke_priority" name="Smoke priority"
+             namespace="http://camunda.org/schema/1.0/dmn"
+             modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.8.0">
+  <decision id="smoke_priority" name="Classify priority">
+    <decisionTable id="DecisionTable_priority" hitPolicy="FIRST">
+      <input id="Input_severity" label="Severity">
+        <inputExpression id="InputExpression_severity" typeRef="string">
+          <text>severity</text>
+        </inputExpression>
+      </input>
+      <output id="Output_priority" label="Priority" name="priority" typeRef="string" />
+      <rule id="Rule_high">
+        <inputEntry id="In_high"><text>"high"</text></inputEntry>
+        <outputEntry id="Out_high"><text>"P1"</text></outputEntry>
+      </rule>
+      <rule id="Rule_medium">
+        <inputEntry id="In_medium"><text>"medium"</text></inputEntry>
+        <outputEntry id="Out_medium"><text>"P2"</text></outputEntry>
+      </rule>
+      <rule id="Rule_other">
+        <inputEntry id="In_other"><text>-</text></inputEntry>
+        <outputEntry id="Out_other"><text>"P3"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+</definitions>

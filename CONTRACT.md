@@ -124,9 +124,9 @@ Put the `.bpmn` (and any `.dmn`) in `bpmn/`: the bridge deploys everything there
 | Mass fire alert received | **message start event** | message name `FireAlert`, correlation key `=caseKey` | correlates `FireAlert` alerts; one running instance per incident (Zeebe enforces this) |
 | Await scene cleared | message catch / receive task | message `SceneCleared`, key `=caseKey` | correlates `SceneCleared` alerts |
 | Destination changed | message catch (boundary or intermediate) **inside the per-unit subprocess** | message `DestinationChanged`, key **`=caseKey + "|" + unitId`** | publishes one message per unit from `CapacityRedirect` |
-| Activate MCI protocol, Request units from neighbouring region, Notify dispatcher of delay, Send EMS pre-alert, Report unit available | **send task** (or message throw event) | job **type `cep-event`**, task header **`activity`** = the element name; optional header `vars` = comma-separated variables to report (e.g. `unitId,patients`) | completes the job and reports the activity (+ listed variables) on `pais.events` and in the XES log |
+| Activate MCI protocol, Request units from neighbouring region, Notify dispatcher of delay, Send EMS pre-alert, Report unit available | **send task** (or message throw event) | job **type `cep-event`**, task header **`activity`** = the element name (Modeler: *Headers* panel, key `activity`) | completes the job and reports the activity on `pais.events` and in the XES log, with `caseKey` and the variables listed in `mapping.json` (`unitId`, …) |
 
-Why `|unitId` on "Destination changed": Zeebe correlates a message to **only one** subscription per process, *even within one instance* ([Camunda docs, Messages](https://docs.camunda.io/docs/components/concepts/messages/)). With one subscription per ambulance in a multi-instance subprocess, a plain `=caseKey` would redirect one random ambulance. So: the multi-instance subprocess needs an input element variable **`unitId`** (e.g. `inputCollection = =units`, `inputElement = unitId`), and "Send EMS pre-alert" / "Report unit available" report it (`vars = unitId`) so the CEP knows which units are en route.
+Why `|unitId` on "Destination changed": Zeebe correlates a message to **only one** subscription per process, *even within one instance* ([Camunda docs, Messages](https://docs.camunda.io/docs/components/concepts/messages/)). With one subscription per ambulance in a multi-instance subprocess, a plain `=caseKey` would redirect one random ambulance. So: the multi-instance subprocess needs an input element variable **`unitId`** (e.g. `inputCollection = =units`, `inputElement = unitId`), which "Send EMS pre-alert" / "Report unit available" then report automatically (`unitId` is in the `cep-event` variables list), so the CEP knows which units are en route. Need another variable reported (e.g. `patients`)? Tell the backend team; it's one entry in `mapping.json`.
 
 **Other tasks block the process until something completes them:**
 
@@ -172,7 +172,7 @@ The only file that connects alert types to models. No Python changes needed for 
     ]
   },
   "zeebe_tasks": {
-    "cep-event": { "activity_from_header": "activity", "vars_from_header": "vars", "emit": true }
+    "cep-event": { "activity_from_header": "activity", "variables": ["unitId"], "emit": true }
   },
   "dcr_watch": { "poll_s": 5, "events": ["<EmergencyOrder id>", "<ReceiveEmergencyDelivery id>"] }
 }
@@ -185,17 +185,18 @@ The only file that connects alert types to models. No Python changes needed for 
 | `publish_message` | send a message (gRPC publish); `correlation_key` template, default `{case_key}`; `ttl_s` how long Zeebe buffers it (0 = drop if nobody waits) |
 | `start_case` / `execute` | DCR: new sim (+ optional `event_id`) / execute `event_id` in this incident's case |
 | `log_activity` | name of the CEP trigger in the XES trace; `""` = don't log (not an activity of that model) |
-| `zeebe_tasks.<type>` | worker per job type; `activity` fixed, or `activity_from_header` read from the task header |
+| `zeebe_tasks.<type>` | worker per job type; `activity` fixed, or `activity_from_header` read from the task header (missing header: the job still completes, the event carries an `error`) |
+| `variables` | process variables fetched by that worker and reported in the PAIS event payload, on top of `caseKey`, `alertType`, `alertId`, `severity`, `cepEventTime` |
 | `emit` | `false` = only log, don't send to Flink |
 | `set` | variables set on the process when the job completes |
-| `dcr_watch` | poll open DCR cases and report newly executed events from this list |
+| `dcr_watch` | poll open DCR cases every `poll_s` and report events newly executed by people in the portal (`role: dcr-user`, `payload.source: dcr-portal`); `events` = only these ids, `[]` = all. Sees an executed **flag**: a second execution of the same event is invisible |
 
 ## 7. Conventions
 
 - **Activity names in logs = names in the models.** Conformance checking compares them literally, so `activity` headers and `log_activity` use the exact element names.
 - BPMN correlation keys: `=caseKey`, except per-unit messages (`=caseKey + "|" + unitId`).
 - Message names in PascalCase, same as the alert type that sends them where possible.
-- The smoke-test process (`bpmn/cep-smoke-test.bpmn`, alert types `SmokeTest`/`SmokeTestUpdate`) only tests the plumbing; it is not part of the project models.
+- The smoke-test process (`bpmn/cep-smoke-test.bpmn` + `.dmn`, alert types `SmokeTest`/`SmokeTestUpdate`) only tests the plumbing; it is not part of the project models. It is also the **template**: message start, a `cep-event` task with an `activity` header, a business rule task calling a DMN decision, a message catch with `=caseKey`.
 
 ## 8. Status (what exists vs what's planned)
 
@@ -205,6 +206,7 @@ The only file that connects alert types to models. No Python changes needed for 
 | FWI computation (`fwi.py`), live + in scenarios, verified against `cffdrs` | ✅ built, `tests/test_fwi.py` |
 | Backfill / replay with `fwi.replay` | ✅ built |
 | Bridge: `start_process`, `publish_message`, DCR `start_case`/`execute`, fixed-activity workers, XES | ✅ built, running on the server |
-| Bridge: `cep-event` header workers + `vars`, `correlate_message` (REST), `correlation_key` template + `ttl_s`, `.dmn` deployment, `dcr_watch` polling | 🚧 next |
-| Flink jobs for the four patterns | 🚧 after the bridge |
+| Bridge: `cep-event` header workers, `correlate_message` (REST), `correlation_key` template + `ttl_s`, `.bpmn`+`.dmn`+`.form` deployment (REST, atomic) | ✅ built, offline tests; smoke test v2 exercises all of it on the server |
+| Bridge: `dcr_watch` polling | ✅ built + tested against a fake DCR API; needs `executed` in the real API's events XML: check with `tools/dcr_probe.py` once credentials exist |
+| Flink jobs for the four patterns | 🚧 next |
 | BPMN with the conventions above, DMN tables, DCR graph + IDs + API account | modelling team |
