@@ -21,7 +21,7 @@ This repo is the backend: event sources → Redpanda → Flink CEP → bridge �
 ## Tests: run before every commit
 
 ```bash
-python3 tests/test_models.py && python3 tests/test_fwi.py && python3 tests/test_rest.py && python3 tests/test_offline.py && python3 tests/test_lifecycle.py
+python3 tests/test_models.py && python3 tests/test_camunda_log.py && python3 tests/test_fwi.py && python3 tests/test_rest.py && python3 tests/test_offline.py && python3 tests/test_lifecycle.py
 sh flink-job/test-core.sh
 ```
 

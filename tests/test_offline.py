@@ -114,6 +114,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
 # ---------------- fake DCR Graphs API ----------------
 class Dcr:
+    LABELS = {"ReportFire": "Report fire", "Escalate": "Escalate case", "CloseCase": "Close case", "Never": "Never"}
     sims = []
     enabled = {}      # sim -> set(events)
     executed = {}     # sim -> set(events)
@@ -157,7 +158,7 @@ class DcrHandler(BaseHTTPRequestHandler):
         if m:
             sid = m.group(1)
             ids = sorted(Dcr.enabled.get(sid, set()) | Dcr.executed.get(sid, set()) | {"Never"})
-            evs = "".join(f'<event id="{e}" label="{e} label" enabled="{str(e in Dcr.enabled.get(sid, set())).lower()}" '
+            evs = "".join(f'<event id="{e}" label="{Dcr.LABELS[e]}" enabled="{str(e in Dcr.enabled.get(sid, set())).lower()}" '
                           f'executed="{str(e in Dcr.executed.get(sid, set())).lower()}"/>' for e in ids)
             return self._send(200, f"<events>{evs}</events>")
         self._send(404)
@@ -220,7 +221,7 @@ def main():
 
     def put_alert(t, ck, et):
         body = json.dumps({"records": [{"key": ck, "value": {
-            "alert_id": f"a-{t}-{ck}", "type": t, "case_key": ck, "cell": ck, "severity": "high",
+            "alert_id": f"a-{t}-{ck}-{et}", "type": t, "case_key": ck, "cell": ck, "severity": "high",
             "event_time": et, "details": {"frp": 42.5}}}]}).encode()
         urllib.request.urlopen(urllib.request.Request(
             f"{proxy_url}/topics/alerts", data=body, method="POST",
@@ -231,6 +232,7 @@ def main():
     put_alert("SmokeTest", "c5_1", T0 + 1000)
     put_alert("SmokeTestUpdate", "c3_4", T0 + 3_600_000)
     put_alert("NoSuchType", "c9_9", T0 + 5)
+    put_alert("SmokeTest", "c3_4", T0)          # exact duplicate (same alert_id): processed once
     body = json.dumps({"records": [{"key": "heartbeat", "value": {"type": "heartbeat", "event_time": T0}}]})
     urllib.request.urlopen(urllib.request.Request(f"{proxy_url}/topics/alerts", data=body.encode(),
                            method="POST", headers={"Content-Type": "application/vnd.kafka.json.v2+json"}))
@@ -276,7 +278,7 @@ def main():
     print("pais.events:", names)
     assert ("camunda", "ProcessStarted", "c3_4") in names
     assert ("dcr", "CaseCreated", "c3_4") in names
-    assert ("dcr", "ReportFire", "c3_4") in names
+    assert ("dcr", "Report fire", "c3_4") in names          # DCR events are named by label
     assert ("camunda", "Acknowledge incident", "c5_1") in names
     assert ("camunda", "Close incident", "c3_4") in names
     assert ("camunda", "Task_NoHeader", "c5_1") in names
@@ -285,18 +287,19 @@ def main():
     close = [e for e in pais if e["event"] == "Close incident"][0]
     assert close["payload"]["priority"] == "P1"
     portal = [e for e in pais if e["payload"].get("source") == "dcr-portal"]
-    assert [(e["event"], e["case_key"], e["role"]) for e in portal] == [("CloseCase", "c3_4", "dcr-user")], portal
+    assert [(e["event"], e["case_key"], e["role"]) for e in portal] == [("Close case", "c3_4", "dcr-user")], portal
     assert portal[0]["event_time"] == T0 + 3_600_000          # event time of the alert that last touched the case (first update)
-    assert portal[0]["payload"]["label"] == "CloseCase label"
-    esc = [e for e in pais if e["event"] == "Escalate"]
+    assert portal[0]["payload"]["event_id"] == "CloseCase"
+    esc = [e for e in pais if e["event"] == "Escalate case"]
     assert len(esc) == 2 and esc[0]["error"] == "" and "CloseCase" in esc[0]["payload"]["enabledEvents"]
     assert esc[1]["error"] and esc[1]["payload"]["rejected"] is True        # Escalate not enabled twice
-    rf = [e for e in pais if e["event"] == "ReportFire" and e["case_key"] == "c3_4"][0]
+    rf = [e for e in pais if e["event"] == "Report fire" and e["case_key"] == "c3_4"][0]
+    assert rf["payload"]["event_id"] == "ReportFire"
     assert rf["event_time"] == T0 and set(rf["payload"]["enabledEvents"]) == {"Escalate", "CloseCase"}
     ack = [e for e in pais if e["event"] == "Acknowledge incident" and e["case_key"] == "c3_4"][0]
     assert ack["event_time"] == T0 and "alert" not in ack["payload"]       # time propagated, no blob
     commits = {k: v for k, v in P.committed.items() if k[0].startswith("test-group-") and k[1] == "alerts"}
-    assert list(commits.values()) == [6], P.committed                      # all 6 records committed (fresh group)
+    assert list(commits.values()) == [7], P.committed                      # all 7 records committed (incl. the duplicate)
     assert all("s3cret-pass" not in json.dumps(e) for e in pais)
 
     # logging service + XES
@@ -319,8 +322,8 @@ def main():
     dacts = [e.find("string[@key='concept:name']").get("value")
              for t in ET.parse(dcr_xes).getroot().findall("trace") for e in t.findall("event")]
     print("DCR traces:", dacts)
-    assert "Fire risk detected" not in dacts and dacts.count("ReportFire") == 2 and dacts.count("Escalate") == 2
-    assert dacts.count("CloseCase") == 1
+    assert "Fire risk detected" not in dacts and dacts.count("Report fire") == 2 and dacts.count("Escalate case") == 2
+    assert dacts.count("Close case") == 1
     print("\nALL OFFLINE TESTS PASSED")
     proxy_srv.shutdown(); dcr_srv.shutdown(); ls.shutdown()
 

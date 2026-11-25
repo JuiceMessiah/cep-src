@@ -20,7 +20,7 @@ Backend for the 02268 group project: external event sources (NASA FIRMS, OpenWea
 | `bpmn/` | BPMN files; every `*.bpmn` here is deployed by the bridge at start | |
 | `tools/send_alert.py` | send one alert by hand: test the process side without a Flink job | laptop |
 | `tools/dcr_probe.py` | shows which attributes the DCR API returns for a case's events (needed by the DCR watch) | anywhere with the DCR account |
-| `tests/` | `test_offline.py` (end-to-end, fake Redpanda/DCR/Zeebe), `test_lifecycle.py`, `test_rest.py` (Camunda REST client), `test_fwi.py`, `test_models.py` (BPMN/DMN/mapping static checks) | anywhere with Python + Flask |
+| `tests/` | `test_offline.py` (end-to-end, fake Redpanda/DCR/Zeebe), `test_lifecycle.py`, `test_rest.py` (Camunda REST client), `test_fwi.py`, `test_models.py` (BPMN/DMN/mapping static checks), `test_camunda_log.py` (XES from Camunda) | anywhere with Python + Flask |
 | `compose.demo.yaml` | **everything on one laptop** (dev + screencast) | laptop |
 | `compose.yaml` | **server** stack: everything in `compose.demo.yaml` plus the live poller, hardened (internal network, digests, 568) | NAS (Arcane), see `runbook-cep-lab.md` |
 
@@ -64,6 +64,7 @@ python3 tests/test_offline.py      # needs Python 3.10+ and Flask
 python3 tests/test_lifecycle.py
 python3 tests/test_rest.py
 python3 tests/test_models.py
+python3 tests/test_camunda_log.py
 python3 tests/test_fwi.py          # stdlib only
 ```
 
