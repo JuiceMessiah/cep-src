@@ -23,40 +23,29 @@ Backend for the 02268 group project: external event sources (NASA FIRMS, OpenWea
 | `tools/dcr_probe.py` | shows which attributes the DCR API returns for a case's events (needed by the DCR watch) | anywhere with the DCR account |
 | `tests/` | `test_offline.py` (end-to-end, fake Redpanda/DCR/Zeebe), `test_lifecycle.py`, `test_rest.py` (Camunda REST client), `test_fwi.py`, `test_models.py` (BPMN/DMN/mapping static checks), `test_camunda_log.py` (XES from Camunda) | anywhere with Python + Flask |
 | `compose.demo.yaml` | **everything on one laptop** (dev + screencast) | laptop |
+| `demo.sh` | one command per demo step: `up`, `replay`, `status`, `pais`, `clean` | laptop |
 | `compose.yaml` | **server** stack: everything in `compose.demo.yaml` plus the live poller, hardened (internal network, digests, 568) | NAS (Arcane), see `runbook-cep-lab.md` |
 
-## Laptop quickstart
+## Laptop quickstart (the demo)
 
-Needs Docker and about 8 GB free RAM (16 GB laptop recommended).
-
-```bash
-cp bridge/.env.template bridge/.env                 # only needed for DCR
-docker compose -f compose.demo.yaml up -d --build
-docker compose -f compose.demo.yaml logs -f bridge  # wait for "deployed cep-smoke-test.bpmn"
-```
-
-Test the CEP → Camunda → CEP path without any Flink job:
+Needs Docker and about 8 GB free RAM (16 GB laptop recommended). Linux, macOS, WSL2 or Git Bash.
 
 ```bash
-python3 tools/send_alert.py SmokeTest c3_4          # message start of cep_smoke_test, "Acknowledge incident", DMN sets priority
-python3 tools/send_alert.py SmokeTestUpdate c3_4    # message FireUpdate → "Close incident" → done
+./demo.sh up        # builds the Flink jar + images, starts everything, waits for Camunda, submits the CEP job
+./demo.sh replay    # the Ourense fire (Aug 2025) in ~120 s -> 5 FireAlert + 5 SceneCleared
+./demo.sh status    # Flink jobs, CEP alerts so far, XES files
+./demo.sh clean     # clean slate before the next take
 ```
 
-Then check:
-
-- **Operate** http://localhost:8088 (demo/demo): instance for `c3_4`, completed
-- **pais.events**: `docker compose -f compose.demo.yaml exec redpanda rpk topic consume pais.events -n 5`
-- **XES**: `./XES/<run>_cep_smoke_test.xes`, or http://localhost:5010/events
-
-DCR: set `DCR_ENABLED=true` and the credentials in `bridge/.env`, and create a test graph with events `ReportFire` and `Escalate` (or change `mapping.json`).
-
-Replay a recorded fire into the CEP:
+Then work the process in **Tasklist** http://localhost:8088/tasklist (demo/demo): pick an incident with `alert.details.danger_class` ≥ 4 for the MCI path (→ `BurnSupplyEmergency`). To show `CapacityRedirect` without the DCR graph: bring an ambulance to *Transport patient*, then
 
 ```bash
-docker compose -f compose.demo.yaml run --rm replayer /scenarios/<name>.jsonl --duration 90
+./demo.sh pais "Emergency order" <caseKey>     # fake DCR event; 2 min later the ambulance is redirected
 ```
 
-UIs: Flink http://localhost:8081 · Operate http://localhost:8088/operate · Tasklist http://localhost:8088/tasklist (demo/demo) · logging http://localhost:5010/events. Everything binds to `127.0.0.1`.
+UIs: Flink http://localhost:8081 · Operate http://localhost:8088/operate · Tasklist http://localhost:8088/tasklist (demo/demo) · logging http://localhost:5010/events. XES files in `./XES`. Everything binds to `127.0.0.1`.
+
+Plumbing test without Flink: `python3 tools/send_alert.py SmokeTest c3_4`, then `… SmokeTestUpdate c3_4` (smoke-test process in Operate). DCR: set `DCR_ENABLED=true` and the credentials in `bridge/.env` (from `bridge/.env.template`), event id in `bridge/mapping.json`.
 
 ## Tests
 
@@ -69,16 +58,17 @@ python3 tests/test_camunda_log.py
 python3 tests/test_fwi.py          # stdlib only
 ```
 
-## Status (2026-11-23)
+## Status (2026-11-26)
 
 | Part | State |
 |---|---|
-| Server: Flink 2.2.1, Redpanda, poller | running on the NAS |
-| Server: Camunda 8.8, bridge, logging | compose ready (`compose.yaml`), not yet deployed |
-| `backfill.py`, `replay.py` | tested offline (fake APIs); real API endpoints not yet run |
-| Bridge, logging service | tested offline end to end; **not yet run against real Zeebe 8.8 / dcrgraphs.net** |
-| Flink CEP job(s) | not started: patterns depend on what the processes need |
-| Real BPMN/DCR models | modelling team; plug in via `bpmn/` + `mapping.json` |
+| Event sources: OpenWeather, FIRMS, computed FWI | live on the NAS |
+| Replay: Ourense fire Aug 2025 (`scenarios/`) | 5 FireAlert + 5 SceneCleared, as predicted |
+| Flink CEP job: all four patterns | run end to end on the NAS (`CapacityRedirect` with a fake DCR event) |
+| Camunda 8.8: ambulance BPMN + 3 DMN | deployed and worked through Tasklist |
+| XES: BPMN from Camunda (complete, ordered, lanes) | verified; processdoctor.dtu.dk upload still to try |
+| DCR Graphs (dcrgraphs.net) | waiting for the graph + API account |
+| Laptop demo (`demo.sh`) | new, first run at the dry run |
 
 ## Secrets
 
