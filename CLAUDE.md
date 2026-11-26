@@ -15,7 +15,7 @@ This repo is the backend: event sources → Redpanda → Flink CEP → bridge �
 | `bridge/` | alerts → Zeebe/DCR; Zeebe jobs + DCR events → `pais.events`; mapping in `bridge/mapping.json` | Python 3.12 + pyzeebe 3.0.4 |
 | `logging_service/` | XES log per process | Python + Flask |
 | `bpmn/` | models deployed by the bridge (`cep-smoke-test.*` = plumbing test + template) | BPMN / DMN |
-| `compose.demo.yaml` | everything on one laptop, bound to 127.0.0.1 | |
+| `compose.demo.yaml`, `demo.sh` | everything on one laptop, bound to 127.0.0.1; `demo.sh up / replay / status / clean` runs a take | sh |
 | `compose.yaml` | the server stack (deployed by hand on the owner's NAS, not from here) | |
 
 ## Tests: run before every commit

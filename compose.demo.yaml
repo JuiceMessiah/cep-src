@@ -1,11 +1,12 @@
 # compose.demo.yaml: the WHOLE system on one laptop (development + the screencast).
 # Not for the server (that's compose.yaml). Everything binds to 127.0.0.1.
 #
+#   ./demo.sh up            # build jar + images, start, wait for Camunda, submit the Flink job
+#   ./demo.sh replay        # replay scenarios/ourense-2025-08.jsonl in ~120 s
+#   ./demo.sh status        # Flink jobs, CEP alerts, XES files
+#   ./demo.sh clean         # clean slate before a take (all instances, logs, topics gone)
+#   (Windows: run demo.sh in WSL2 or Git Bash, or the commands inside it by hand.)
 #   cp bridge/.env.template bridge/.env              # only needed for DCR
-#   docker compose -f compose.demo.yaml up -d --build
-#   python3 tools/send_alert.py SmokeTest c3_4       # CEP -> Camunda without a Flink job
-#   docker compose -f compose.demo.yaml run --rm replayer /scenarios/<name>.jsonl --duration 90
-#   docker compose -f compose.demo.yaml down -v      # clean slate before a take
 #
 # UIs:   Flink http://localhost:8081   Camunda http://localhost:8088/operate (demo/demo), /tasklist
 #        logging service http://localhost:5010/events   XES files in ./XES
@@ -69,6 +70,8 @@ services:
     command: jobmanager
     ports:
       - "127.0.0.1:8081:8081"
+    volumes:
+      - ./flink-job/target:/jobs:ro     # demo.sh builds cep-job-1.0.jar here and submits /jobs/...
     environment:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: jobmanager
@@ -146,6 +149,7 @@ services:
     volumes:
       - ./bridge/mapping.json:/config/mapping.json:ro
       - ./bpmn:/bpmn:ro
+      - bridge-state:/state   # case map, offsets, seen alerts, Camunda-log progress; `down -v` clears it
     restart: unless-stopped
 
   logging-service:
@@ -199,3 +203,4 @@ services:
 
 volumes:
   redpanda-data: {}
+  bridge-state: {}
