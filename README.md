@@ -19,6 +19,7 @@ Backend for the 02268 group project: external event sources (NASA FIRMS, OpenWea
 | `logging_service/` | XES log per process (based on the course example) | laptop |
 | `bpmn/` | BPMN files; every `*.bpmn` here is deployed by the bridge at start | |
 | `tools/send_alert.py` | send one alert by hand: test the process side without a Flink job | laptop |
+| `tools/send_pais.py` | send one PAIS event by hand (e.g. DCR "Emergency order"): test the process patterns before the real source exists | NAS / laptop |
 | `tools/dcr_probe.py` | shows which attributes the DCR API returns for a case's events (needed by the DCR watch) | anywhere with the DCR account |
 | `tests/` | `test_offline.py` (end-to-end, fake Redpanda/DCR/Zeebe), `test_lifecycle.py`, `test_rest.py` (Camunda REST client), `test_fwi.py`, `test_models.py` (BPMN/DMN/mapping static checks), `test_camunda_log.py` (XES from Camunda) | anywhere with Python + Flask |
 | `compose.demo.yaml` | **everything on one laptop** (dev + screencast) | laptop |

@@ -14,8 +14,12 @@ import java.util.Map;
  * BurnSupplyEmergency: BPMN "Activate MCI protocol" AND (incident danger class >= burnDanger
  *                      OR >= preAlertCount x "Send EMS pre-alert" within preAlertWindow). Once.
  * CapacityRedirect:    DCR "Emergency order" NOT followed by "Receive emergency delivery" within
- *                      deliveryTimeout, while the incident is active -> one alert per unit en route
- *                      (pre-alert seen, "Report unit available" not yet). Absence pattern: a timer.
+ *                      deliveryTimeout -> one alert per unit en route (pre-alert seen, "Report unit
+ *                      available" not yet). Absence pattern: a timer.
+ *                      Deliberately NOT tied to SceneCleared: that is event time (a replay clears a fire
+ *                      in two wall-clock minutes), while transports run in wall-clock time, and patients
+ *                      on the road still need a burn-capable destination after the fire is out.
+ *                      Relevance is "units en route", which the pre-alert/available events track.
  *
  * Inputs: our own FireAlert / SceneCleared alerts (incident state + danger class) and pais.events.
  * Event names are parameters. DCR events arrive under their labels (the bridge names them so),
@@ -36,7 +40,7 @@ public class ProcessPatternLogic implements Serializable {
         public long deliveryTimeoutMs = 2 * 60_000L;                 // demo; the graph says PT24H
     }
 
-    public boolean active;
+    public boolean active;                     // fire still burning (FireAlert..SceneCleared); informational
     public String cell;
     public int dangerClass = -1;
     public long envTime;                       // event time of the CEP context, for emitted alerts
@@ -59,8 +63,7 @@ public class ProcessPatternLogic implements Serializable {
             if (dc instanceof Number n) dangerClass = n.intValue();
             envTime = Math.max(envTime, eventTime);
         } else if ("SceneCleared".equals(type)) {
-            active = false;
-            orderDeadline = -1;                // no redirects for a finished incident
+            active = false;                    // does NOT cancel a pending CapacityRedirect (see class doc)
         }
     }
 
@@ -100,7 +103,6 @@ public class ProcessPatternLogic implements Serializable {
         List<Alert> out = new ArrayList<>();
         if (orderDeadline < 0 || now < orderDeadline) return out;    // cancelled or stale timer
         orderDeadline = -1;
-        if (!active) return out;
         for (String u : enRoute) {
             if (!redirected.add(u)) continue;                        // one redirect per unit
             Map<String, Object> d = new LinkedHashMap<>();
