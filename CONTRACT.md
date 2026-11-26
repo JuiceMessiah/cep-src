@@ -107,6 +107,7 @@ Both are written by the logging service to `XES/<run>_<process>.xes`. The Camund
 
 - **Environment patterns** (`FireAlert`, `SceneCleared`) run on **event time** (`event_time`, watermarks). That's what makes a replay of an August 2025 fire, played 2,000× faster, produce the same alerts as it would have live.
 - **Process patterns** (`BurnSupplyEmergency`, `CapacityRedirect`) react to what *people* do in Tasklist and the DCR portal, in real time. Their windows and deadlines are **wall-clock** (`timestamp` of the PAIS event), like the DCR graph's own `PT24H` deadline. For the demo the deadlines are shortened by parameter (e.g. 24 h → 2 min).
+- **The clocks don't mix, and that shapes the patterns.** A replay runs the fire (event time) through in about two wall-clock minutes; people need far longer to work the process. So process patterns don't depend on environment state that a replay races through: `CapacityRedirect` is *not* cancelled by `SceneCleared` (patients on the road still need a burn-capable destination after the fire is out); its relevance is "units en route", tracked by the pre-alert / unit-available events.
 - PAIS events still carry `event_time` = the event time of the alert that last touched the case (process variable `cepEventTime`), so Flink can join them with the incident's environment state.
 
 ## 4. CEP patterns
@@ -118,7 +119,7 @@ Parameters in *italics* are Flink job arguments; the values are the defaults (`f
 | **`FireAlert`** | ≥ *3* FIRMS detections (confidence not `l`) in one cell within *6 h*, **while** that cell's current FWI `danger_class` ≥ *2* (Moderate). Once per incident; creates the incident key. | firms + fwi | BPMN `Ambulance_process`: message start **Major fire alert received** |
 | **`SceneCleared`** | Active incident, and **no** detection in its cell or the 8 neighbouring cells for *12 h* (absence pattern, event-time timer; replays end with a heartbeat so it can fire). Ends the incident. | firms (absence) | BPMN: message **Await scene cleared** |
 | **`BurnSupplyEmergency`** | PAIS `Activate MCI protocol` for an incident **and** (that cell's `danger_class` ≥ *4* **or** ≥ *3* × `Send EMS pre-alert` for the incident within *60 min* wall clock). Once per incident. | pais.events + fwi | DCR purchasing: new case + **Declare Emergency Procurement** |
-| **`CapacityRedirect`** | DCR `Emergency order` for an incident **not followed by** `Receive emergency delivery` within *2 min* wall clock (graph deadline PT24H, shortened for the demo), **while** the incident is active. One alert **per unit en route** (`Send EMS pre-alert` seen, `Report unit available` not yet). | pais.events (both engines) | BPMN: message **Destination changed** for that unit |
+| **`CapacityRedirect`** | DCR `Emergency order` for an incident **not followed by** `Receive emergency delivery` within *2 min* wall clock (graph deadline PT24H, shortened for the demo). One alert **per unit en route** (`Send EMS pre-alert` seen, `Report unit available` not yet). | pais.events (both engines) | BPMN: message **Destination changed** for that unit |
 
 `FireAlert` and `SceneCleared` are the environment → process direction; `BurnSupplyEmergency` (BPMN → CEP → DCR) and `CapacityRedirect` (DCR → CEP → BPMN) are the process → process direction through the CEP.
 

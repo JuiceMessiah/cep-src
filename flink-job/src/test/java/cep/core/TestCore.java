@@ -143,13 +143,20 @@ public final class TestCore {
         d.onPais(k, "Emergency order", Map.of(), "", T0, 0, p);
         d.onPais(k, "Receive emergency delivery", Map.of(), "", T0, 1 * MIN, p);
         check("delivered in time", d.nextTimer() == -1 && d.onTimer(k, 5 * MIN, p).isEmpty(), "");
-        // incident over: no redirect
+        // fire cleared (event time) while a unit is still transporting (wall clock): still redirected
         var e = new ProcessPatternLogic();
         e.onAlert("FireAlert", "c2_2", Map.of("danger_class", 3), T0);
         e.onPais(k, "Send EMS pre-alert", Map.of("unitId", "amb-9"), "", T0, 0, p);
         e.onPais(k, "Emergency order", Map.of(), "", T0, 0, p);
         e.onAlert("SceneCleared", "c2_2", Map.of(), T0 + 20 * H);
-        check("cleared incident", e.onTimer(k, 5 * MIN, p).isEmpty(), "");
+        List<Alert> late = e.onTimer(k, 5 * MIN, p);
+        check("cleared incident still redirects", late.size() == 1 && late.get(0).details.get("unit_id").equals("amb-9"), late);
+        // nobody en route: nothing to redirect
+        var f = new ProcessPatternLogic();
+        f.onPais(k, "Send EMS pre-alert", Map.of("unitId", "amb-7"), "", T0, 0, p);
+        f.onPais(k, "Report unit available", Map.of("unitId", "amb-7"), "", T0, 0, p);
+        f.onPais(k, "Emergency order", Map.of(), "", T0, 0, p);
+        check("no unit en route", f.onTimer(k, 5 * MIN, p).isEmpty(), "");
     }
 
     static void json() {
