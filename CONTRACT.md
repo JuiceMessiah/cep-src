@@ -161,15 +161,15 @@ Variables in every instance started or touched by the CEP: `caseKey`, `alertType
 
 | Item | Value |
 |---|---|
-| Graph ID | *from the DCR modeller* |
-| Event **id** for the bridge, **labels** for everything else | the bridge *executes* by id (`mapping.json`: the id behind **Declare Emergency Procurement**; `tools/dcr_probe.py` prints it); pais.events, XES and the Flink job use the **labels** **Emergency order** and **Receive emergency delivery** (so recreating the graph doesn't break the CEP) |
+| Graph ID | **2017014** ("Purchasing of specialized equipment and instruments"; `DCR_GRAPH_ID` in `bridge/.env`) |
+| Event **id** for the bridge, **labels** for everything else | the bridge *executes* by id (`mapping.json`: **`A1`** = *Declare emergency procurement*; `tools/dcr_probe.py` prints the ids); pais.events, XES and the Flink job use the **labels** **Emergency order** and **Receive emergency delivery** (so recreating the graph doesn't break the CEP) |
 | Case per incident | `BurnSupplyEmergency` creates one case per incident key and executes *Declare Emergency Procurement* |
 | What comes back | the bridge reports events it executes itself, **and polls open cases** for events people execute in the DCR portal (needed for `CapacityRedirect`) |
 | Account | API credentials in `bridge.env` on the server / demo laptop, **never in git** |
 
 ## 6. `bridge/mapping.json`
 
-The only file that connects alert types to models. No Python changes needed for new models. Current entries (the DCR event id is filled in once the graph is on dcrgraphs.net; `tools/dcr_probe.py` prints it):
+The only file that connects alert types to models. No Python changes needed for new models. Current entries:
 
 ```json
 {
@@ -188,7 +188,7 @@ The only file that connects alert types to models. No Python changes needed for 
         "process_id": "Ambulance_process", "log_activity": "Destination changed" }
     ],
     "BurnSupplyEmergency": [
-      { "engine": "dcr", "action": "start_case", "event_id": "SET_ME_DeclareEmergencyProcurement",
+      { "engine": "dcr", "action": "start_case", "event_id": "A1",
         "log_activity": "" }
     ]
   },
@@ -216,7 +216,7 @@ The `SmokeTest`/`SmokeTestUpdate` entries (smoke-test process) stay for plumbing
 | `emit` | `false` = only log, don't send to Flink |
 | `set` | variables set on the process when the job completes |
 | `camunda_log` | write the XES log for BPMN processes from Camunda's completed element instances every `poll_s` (§3.3b); optional `tags` = BPMN element types to log (default: all task types + start/boundary/intermediate events) |
-| `dcr_watch` | poll open DCR cases every `poll_s` and report events newly executed by people in the portal (`role: dcr-user`, `payload.source: dcr-portal`); `events` = only these ids or labels, `[]` = all. Sees an executed **flag**: a second execution of the same event is invisible |
+| `dcr_watch` | poll open DCR cases every `poll_s` and report events newly executed by people in the portal (`role: dcr-user`, `payload.source: dcr-portal`); `events` = only these ids or labels, `[]` = all. Sees an executed **flag**: a second execution of the same event is invisible. Nests/subprocesses (events another event names as `parent`) are skipped: the API marks them executed with their first child |
 
 ## 7. Conventions
 
@@ -234,6 +234,7 @@ The `SmokeTest`/`SmokeTestUpdate` entries (smoke-test process) stay for plumbing
 | Backfill / replay with `fwi.replay` | ✅ built |
 | Bridge: `start_process`, `publish_message`, DCR `start_case`/`execute`, fixed-activity workers, XES | ✅ built, running on the server |
 | Bridge: `cep-event` header workers, `correlate_message` (REST), `correlation_key` template + `ttl_s`, `.bpmn`+`.dmn`+`.form` deployment (REST, atomic) | ✅ built, offline tests; smoke test v2 exercises all of it on the server |
-| Bridge: `dcr_watch` polling | ✅ built + tested against a fake DCR API; needs `executed` in the real API's events XML: check with `tools/dcr_probe.py` once credentials exist |
+| Bridge: `dcr_watch` polling | ✅ built + tested against a fake DCR API and the real graph 2017014 (`executed` is in the events XML; nests skipped) |
 | Flink job for the four patterns (`flink-job/`) | ✅ logic built + tested (`test-core.sh`); Flink wiring compiles against stand-ins, first real build on the NAS pending |
-| BPMN with the conventions above, DMN tables, DCR graph + IDs + API account | modelling team |
+| DCR graph 2017014 + event id `A1` + API account; `BurnSupplyEmergency` → case + *Declare emergency procurement* run live through the bridge | ✅ (2026-11-27) |
+| BPMN with the conventions above, DMN tables | modelling team |

@@ -38,7 +38,7 @@ import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 
-from dcr import enabled as dcr_enabled, executed as dcr_executed
+from dcr import containers as dcr_containers, enabled as dcr_enabled, executed as dcr_executed
 
 REQUIRED_ALERT_FIELDS = ("alert_id", "type", "case_key", "event_time")
 
@@ -368,6 +368,7 @@ class Bridge:
                            "Run tools/dcr_probe.py to see what it does return.")
                 self._dcr_watch_off = True
                 return n
+            now_exec -= dcr_containers(events)     # a nest is "executed" with its first child: not an activity
             self._learn_labels(events)
             before = self._dcr_seen.get(case)
             self._dcr_seen[case] = set(now_exec) if before is None else before | now_exec

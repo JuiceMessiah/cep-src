@@ -114,7 +114,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
 # ---------------- fake DCR Graphs API ----------------
 class Dcr:
-    LABELS = {"ReportFire": "Report fire", "Escalate": "Escalate case", "CloseCase": "Close case", "Never": "Never"}
+    LABELS = {"ReportFire": "Report fire", "Escalate": "Escalate case", "CloseCase": "Close case", "Never": "Never",
+              "Closing": "Closing"}
+    PARENT = {"CloseCase": "Closing"}   # a nest, as the real API reports it: executed once a child is
     sims = []
     enabled = {}      # sim -> set(events)
     executed = {}     # sim -> set(events)
@@ -157,9 +159,13 @@ class DcrHandler(BaseHTTPRequestHandler):
         m = re.fullmatch(r"/api/graphs/42/sims/(\d+)/events", self.path)
         if m:
             sid = m.group(1)
-            ids = sorted(Dcr.enabled.get(sid, set()) | Dcr.executed.get(sid, set()) | {"Never"})
+            done = Dcr.executed.get(sid, set())
+            done = done | {Dcr.PARENT[e] for e in done if e in Dcr.PARENT}
+            ids = sorted(Dcr.enabled.get(sid, set()) | done | {"Never", "Closing"})
+            kind = {"Closing": "Subprocess"}
             evs = "".join(f'<event id="{e}" label="{Dcr.LABELS[e]}" enabled="{str(e in Dcr.enabled.get(sid, set())).lower()}" '
-                          f'executed="{str(e in Dcr.executed.get(sid, set())).lower()}"/>' for e in ids)
+                          f'executed="{str(e in done).lower()}" parent="{Dcr.PARENT.get(e, "")}" '
+                          f'type="{kind.get(e, "")}"/>' for e in ids)
             return self._send(200, f"<events>{evs}</events>")
         self._send(404)
 
@@ -256,7 +262,7 @@ def main():
         # ...then a person executes CloseCase in the portal on c3_4's case
         c34 = bridge.cases[("dcr", "dcr:42", "c3_4")]
         Dcr.executed[c34].add("CloseCase")
-        assert await bridge.dcr_watch_once() == 1
+        assert await bridge.dcr_watch_once() == 1        # CloseCase only: its nest "Closing" is not an activity
         assert await bridge.dcr_watch_once() == 0        # reported once, not on every poll
         # second update for c5_1 -> DCR Escalate allowed; then Escalate again on c3_4 -> rejected by DCR
         put_alert("SmokeTestUpdate", "c3_4", T0 + 7_200_000)
