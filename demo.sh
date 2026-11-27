@@ -42,6 +42,7 @@ case "${1:-}" in
 up)
     [ -f "$JAR" ] || build_jar
     mkdir -p XES logs
+    chmod a+w XES logs   # the logging service runs as 568:568; on Linux these dirs belong to you
     say "starting the stack"
     $DC up -d --build
     say "waiting for Camunda + bridge (1-3 min on a cold start)"
