@@ -5,6 +5,7 @@
 #   ./demo.sh replay [file] [s]  replay a scenario (default scenarios/ourense-2025-08.jsonl, 120 s)
 #   ./demo.sh status             Flink jobs, CEP alerts so far, XES files
 #   ./demo.sh pais "<event>" <case_key> [--unit amb-1]   fake PAIS event (e.g. DCR "Emergency order")
+#   ./demo.sh dcr ["<activity>" <case_key>]      list / execute DCR activities in the bridge's case
 #   ./demo.sh clean              stop everything and wipe state: instances, topics, logs, XES
 #
 # A take: ./demo.sh clean && ./demo.sh up && ./demo.sh replay, then work Tasklist.
@@ -69,6 +70,10 @@ pais)
     shift
     python3 tools/send_pais.py "$@"
     ;;
+dcr)
+    shift
+    python3 tools/dcr_exec.py "$@"
+    ;;
 clean)
     say "stopping and wiping (process instances, topics, bridge state, logs, XES)"
     $DC --profile tools --profile live down -v --remove-orphans
@@ -79,7 +84,7 @@ build)
     $DC build
     ;;
 *)
-    sed -n '2,11p' "$0"
+    sed -n '2,12p' "$0"
     exit 2
     ;;
 esac
