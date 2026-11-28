@@ -99,6 +99,12 @@ def enabled(events):
     return [e["id"] for e in events if "id" in e and e.get("enabled", "").lower() == "true"]
 
 
+def containers(events):
+    """Ids of nests/subprocesses: events that other events name as their `parent`. The API marks
+    them executed as soon as one of their children runs, but they are not activities."""
+    return {e["parent"] for e in events if e.get("parent")}
+
+
 def executed(events):
     """Set of executed event ids, or None if the API doesn't report an executed flag."""
     if not events or not any("executed" in e for e in events):

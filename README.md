@@ -58,7 +58,7 @@ python3 tests/test_camunda_log.py
 python3 tests/test_fwi.py          # stdlib only
 ```
 
-## Status (2026-11-26)
+## Status (2026-11-27)
 
 | Part | State |
 |---|---|
@@ -67,7 +67,7 @@ python3 tests/test_fwi.py          # stdlib only
 | Flink CEP job: all four patterns | run end to end on the NAS (`CapacityRedirect` with a fake DCR event) |
 | Camunda 8.8: ambulance BPMN + 3 DMN | deployed and worked through Tasklist |
 | XES: BPMN from Camunda (complete, ordered, lanes) | verified; processdoctor.dtu.dk upload still to try |
-| DCR Graphs (dcrgraphs.net) | waiting for the graph + API account |
+| DCR Graphs (dcrgraphs.net) | graph 2017014 wired in (`A1`); bridge run live against it: `BurnSupplyEmergency` → case, portal events → `pais.events` by label |
 | Laptop demo (`demo.sh`) | new, first run at the dry run |
 
 ## Secrets

@@ -5,6 +5,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY --chmod=0644 pandaproxy.py dcr.py camunda_rest.py bpmn_meta.py core.py app.py ./
+# A new named volume (compose.demo.yaml: bridge-state) takes this owner; the server bind-mounts its own 568:568 dir.
+RUN mkdir -p /state && chown 568:568 /state
 
 USER 568:568
 CMD ["python", "-u", "app.py"]

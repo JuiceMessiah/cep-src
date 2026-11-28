@@ -5,6 +5,7 @@
 #   ./demo.sh replay [file] [s]  replay a scenario (default scenarios/ourense-2025-08.jsonl, 120 s)
 #   ./demo.sh status             Flink jobs, CEP alerts so far, XES files
 #   ./demo.sh pais "<event>" <case_key> [--unit amb-1]   fake PAIS event (e.g. DCR "Emergency order")
+#   ./demo.sh dcr ["<activity>" <case_key>]      list / execute DCR activities in the bridge's case
 #   ./demo.sh clean              stop everything and wipe state: instances, topics, logs, XES
 #
 # A take: ./demo.sh clean && ./demo.sh up && ./demo.sh replay, then work Tasklist.
@@ -41,6 +42,7 @@ case "${1:-}" in
 up)
     [ -f "$JAR" ] || build_jar
     mkdir -p XES logs
+    chmod a+w XES logs   # the logging service runs as 568:568; on Linux these dirs belong to you
     say "starting the stack"
     $DC up -d --build
     say "waiting for Camunda + bridge (1-3 min on a cold start)"
@@ -69,6 +71,10 @@ pais)
     shift
     python3 tools/send_pais.py "$@"
     ;;
+dcr)
+    shift
+    python3 tools/dcr_exec.py "$@"
+    ;;
 clean)
     say "stopping and wiping (process instances, topics, bridge state, logs, XES)"
     $DC --profile tools --profile live down -v --remove-orphans
@@ -79,7 +85,7 @@ build)
     $DC build
     ;;
 *)
-    sed -n '2,11p' "$0"
+    sed -n '2,12p' "$0"
     exit 2
     ;;
 esac

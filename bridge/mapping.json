@@ -1,5 +1,5 @@
 {
-  "_comment": "What the bridge does per CEP alert type, and which BPMN jobs report back to the CEP. See CONTRACT.md sections 5 and 6. FireAlert/SceneCleared/CapacityRedirect drive bpmn/ambulance_fire_response.bpmn (process Ambulance_process); BurnSupplyEmergency drives the DCR purchasing graph (event id to fill in once the graph is on dcrgraphs.net: tools/dcr_probe.py prints it). The SmokeTest entries drive bpmn/cep-smoke-test.bpmn (plumbing test). Activity names must match the element names in the models: they become the XES activities used for conformance checking.",
+  "_comment": "What the bridge does per CEP alert type, and which BPMN jobs report back to the CEP. See CONTRACT.md sections 5 and 6. FireAlert/SceneCleared/CapacityRedirect drive bpmn/ambulance_fire_response.bpmn (process Ambulance_process); BurnSupplyEmergency drives the DCR purchasing graph 2017014 (A1 = Declare emergency procurement; tools/dcr_probe.py prints the ids). The SmokeTest entries drive bpmn/cep-smoke-test.bpmn (plumbing test). Activity names must match the element names in the models: they become the XES activities used for conformance checking.",
   "on_alert": {
     "SmokeTest": [
       {
@@ -66,7 +66,7 @@
       {
         "engine": "dcr",
         "action": "start_case",
-        "event_id": "SET_ME_DeclareEmergencyProcurement",
+        "event_id": "A1",
         "log_activity": ""
       }
     ]
